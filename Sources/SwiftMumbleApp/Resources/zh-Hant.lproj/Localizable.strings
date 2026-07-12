@@ -381,3 +381,6 @@
 "settings.channelExpansion.collapsed" = "摺疊子頻道";
 "settings.showReturnPreviousChannel" = "顯示返回上一頻道";
 "settings.showHideEmptyChannels" = "顯示隱藏空頻道";
+"settings.connection" = "連線";
+"settings.interface" = "介面";
+"settings.shortcuts" = "快速鍵";

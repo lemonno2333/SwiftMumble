@@ -381,3 +381,6 @@
 "settings.channelExpansion.collapsed" = "Collapse Subchannels";
 "settings.showReturnPreviousChannel" = "Show Return to Previous Channel";
 "settings.showHideEmptyChannels" = "Show Hide Empty Channels";
+"settings.connection" = "Connection";
+"settings.interface" = "Interface";
+"settings.shortcuts" = "Shortcuts";

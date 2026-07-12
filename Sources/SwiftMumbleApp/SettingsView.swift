@@ -16,9 +16,10 @@ struct SettingsView: View {
     @State private var isExportingIdentity = false
     @State private var identityTransferError: String?
     @State private var proxyPassword = ""
+    @State private var selectedTab = SettingsTab.audio
 
     var body: some View {
-        TabView {
+        TabView(selection: $selectedTab) {
             Form {
                 Picker(L10n.text("settings.transmission"), selection: transmissionModeSelection) {
                     Text(L10n.text("audio.pushToTalk")).tag(AudioTransmissionMode.pushToTalk)
@@ -267,223 +268,6 @@ struct SettingsView: View {
                         set: { session.setUnmuteOnUndeafen($0) }
                     )
                 )
-                Toggle(
-                    L10n.text("settings.autoReconnect"),
-                    isOn: Binding(
-                        get: { session.autoReconnectEnabled },
-                        set: { session.setAutoReconnectEnabled($0) }
-                    )
-                )
-                Toggle(
-                    L10n.text("settings.publicServers"),
-                    isOn: Binding(
-                        get: { session.publicServerDirectoryEnabled },
-                        set: { session.setPublicServerDirectoryEnabled($0) }
-                    )
-                )
-                Text(L10n.text("settings.publicServers.privacy"))
-                    .font(.caption).foregroundStyle(.secondary)
-                LabeledContent(L10n.text("settings.connectionTimeout")) {
-                    Stepper(
-                        L10n.text("settings.seconds", session.connectionTimeoutSeconds),
-                        value: Binding(get: { session.connectionTimeoutSeconds }, set: { session.setConnectionTimeoutSeconds($0) }),
-                        in: 5 ... 120, step: 5
-                    )
-                }
-                LabeledContent(L10n.text("settings.pingInterval")) {
-                    Stepper(
-                        L10n.text("settings.seconds", session.controlPingIntervalSeconds),
-                        value: Binding(get: { session.controlPingIntervalSeconds }, set: { session.setControlPingIntervalSeconds($0) }),
-                        in: 5 ... 60, step: 5
-                    )
-                }
-                DisclosureGroup(L10n.text("settings.proxy")) {
-                    Picker(L10n.text("settings.proxy.type"), selection: Binding(
-                        get: { session.proxyType }, set: { session.proxyType = $0 }
-                    )) {
-                        Text(L10n.text("settings.proxy.none")).tag(MumbleProxyType.none)
-                        Text("SOCKS5").tag(MumbleProxyType.socks5)
-                        Text("HTTP CONNECT").tag(MumbleProxyType.httpConnect)
-                    }
-                    if session.proxyType != .none {
-                        TextField(L10n.text("settings.proxy.host"), text: Binding(get: { session.proxyHost }, set: { session.proxyHost = $0 }))
-                        TextField(L10n.text("settings.proxy.port"), value: Binding(get: { Int(session.proxyPort) }, set: { session.proxyPort = UInt16(clamping: $0) }), format: .number)
-                        TextField(L10n.text("settings.proxy.username"), text: Binding(get: { session.proxyUsername }, set: { session.proxyUsername = $0 }))
-                        SecureField(L10n.text("settings.proxy.password"), text: $proxyPassword)
-                    }
-                    Button(L10n.text("settings.proxy.save")) {
-                        session.saveProxy(type: session.proxyType, host: session.proxyHost, port: session.proxyPort,
-                                          username: session.proxyUsername, password: proxyPassword)
-                        proxyPassword = ""
-                    }
-                    Text(L10n.text("settings.proxy.help")).font(.caption).foregroundStyle(.secondary)
-                }
-                if session.serverSuggestedPushToTalk != nil || session.serverSuggestedPositionalAudio != nil || session.serverSuggestedVersion != nil {
-                    DisclosureGroup(L10n.text("settings.serverSuggestions")) {
-                        if let ptt = session.serverSuggestedPushToTalk {
-                            LabeledContent(L10n.text("settings.serverSuggestions.ptt"), value: ptt ? L10n.text("common.yes") : L10n.text("common.no"))
-                        }
-                        if let positional = session.serverSuggestedPositionalAudio {
-                            LabeledContent(L10n.text("settings.serverSuggestions.positional"), value: positional ? L10n.text("common.yes") : L10n.text("common.no"))
-                        }
-                        if let version = session.serverSuggestedVersion {
-                            LabeledContent(L10n.text("settings.serverSuggestions.version"), value: "\(version)")
-                        }
-                        Text(L10n.text("settings.serverSuggestions.help")).font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-                Toggle(
-                    L10n.text("settings.notifications"),
-                    isOn: Binding(
-                        get: { session.notificationsEnabled },
-                        set: { session.setNotificationsEnabled($0) }
-                    )
-                )
-                Text(L10n.text("settings.notifications.help"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Toggle(
-                    L10n.text("settings.textToSpeech"),
-                    isOn: Binding(
-                        get: { session.textToSpeechEnabled },
-                        set: { session.setTextToSpeechEnabled($0) }
-                    )
-                )
-                Text(L10n.text("settings.textToSpeech.help"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                LabeledContent(L10n.text("settings.chatLogLimit")) {
-                    Stepper("\(session.chatLogLimit)", value: Binding(
-                        get: { session.chatLogLimit }, set: { session.setChatLogLimit($0) }
-                    ), in: 50 ... 5_000, step: 50)
-                }
-                Toggle(L10n.text("settings.chat24Hour"), isOn: Binding(
-                    get: { session.chatUses24HourTime }, set: { session.setChatUses24HourTime($0) }
-                ))
-                Picker(L10n.text("settings.channelExpansion"), selection: Binding(
-                    get: { session.channelExpansionPolicy }, set: { session.setChannelExpansionPolicy($0) }
-                )) {
-                    Text(L10n.text("settings.channelExpansion.current")).tag(ChannelExpansionPolicy.currentPath)
-                    Text(L10n.text("settings.channelExpansion.all")).tag(ChannelExpansionPolicy.all)
-                    Text(L10n.text("settings.channelExpansion.collapsed")).tag(ChannelExpansionPolicy.collapsed)
-                }
-                Toggle(
-                    L10n.text("settings.showReturnPreviousChannel"),
-                    isOn: Binding(
-                        get: { session.showsReturnToPreviousChannelControl },
-                        set: { session.setShowsReturnToPreviousChannelControl($0) }
-                    )
-                )
-                Toggle(
-                    L10n.text("settings.showHideEmptyChannels"),
-                    isOn: Binding(
-                        get: { session.showsHideEmptyChannelsControl },
-                        set: { session.setShowsHideEmptyChannelsControl($0) }
-                    )
-                )
-                Toggle(
-                    L10n.text("settings.serverShortcuts"),
-                    isOn: Binding(
-                        get: { session.selectedServerUsesShortcutOverride },
-                        set: { session.setSelectedServerShortcutOverrideEnabled($0) }
-                    )
-                )
-                .disabled(session.selectedServer == nil)
-                Text(L10n.text("settings.serverShortcuts.help", session.selectedServer?.name ?? ""))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Toggle(
-                    L10n.text("settings.globalPushToTalk"),
-                    isOn: Binding(
-                        get: { session.isGlobalPushToTalkEnabled },
-                        set: { session.setGlobalPushToTalkEnabled($0) }
-                    )
-                )
-                .disabled(session.transmissionMode != .pushToTalk)
-                LabeledContent(L10n.text("settings.globalShortcut")) {
-                    ShortcutRecorderView(
-                        shortcut: session.globalPushToTalkShortcut,
-                        onRecordingChanged: session.setRecordingGlobalShortcut,
-                        onChange: session.setGlobalPushToTalkShortcut
-                    )
-                }
-                .disabled(session.transmissionMode != .pushToTalk)
-                Text(L10n.text(
-                    "settings.globalPushToTalk.help",
-                    session.globalPushToTalkShortcut.displayName
-                ))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                if let shortcutError = session.globalPushToTalkError {
-                    Text(shortcutError)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                }
-                Toggle(
-                    L10n.text("settings.pushToMute"),
-                    isOn: Binding(get: { session.isPushToMuteEnabled }, set: { session.setPushToMuteEnabled($0) })
-                )
-                LabeledContent(L10n.text("settings.pushToMuteShortcut")) {
-                    ShortcutRecorderView(
-                        shortcut: session.pushToMuteShortcut,
-                        onRecordingChanged: session.setRecordingPushToMuteShortcut,
-                        onChange: session.setPushToMuteShortcut
-                    )
-                }
-                .disabled(!session.isPushToMuteEnabled)
-                Toggle(
-                    L10n.text("settings.globalAudioShortcuts"),
-                    isOn: Binding(
-                        get: { session.areGlobalAudioShortcutsEnabled },
-                        set: { session.setGlobalAudioShortcutsEnabled($0) }
-                    )
-                )
-                ForEach(GlobalAudioShortcutAction.allCases) { action in
-                    LabeledContent(L10n.text("settings.shortcut.\(action.rawValue)")) {
-                        ShortcutRecorderView(
-                            shortcut: session.globalAudioShortcuts[action] ?? .default,
-                            onRecordingChanged: session.setRecordingGlobalAudioShortcut,
-                            onChange: { session.setGlobalAudioShortcut($0, for: action) }
-                        )
-                    }
-                    .disabled(!session.areGlobalAudioShortcutsEnabled)
-                }
-                Toggle(
-                    L10n.text("settings.whisperShortcut"),
-                    isOn: Binding(get: { session.isWhisperShortcutEnabled }, set: { session.setWhisperShortcutEnabled($0) })
-                )
-                LabeledContent(L10n.text("settings.whisperKey")) {
-                    ShortcutRecorderView(
-                        shortcut: session.whisperShortcut,
-                        onRecordingChanged: session.setRecordingWhisperShortcut,
-                        onChange: session.setWhisperShortcut
-                    )
-                }
-                .disabled(!session.isWhisperShortcutEnabled)
-                if let target = session.configuredVoiceTarget {
-                    LabeledContent(L10n.text("settings.whisperTarget"), value: voiceTargetName(target))
-                    Button(L10n.text("settings.whisperClear"), role: .destructive) { session.clearWhisperTarget() }
-                } else {
-                    Text(L10n.text("settings.whisperTarget.none"))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Picker(L10n.text("settings.idleAction"), selection: Binding(
-                    get: { session.idleAudioAction }, set: { session.setIdleAudioAction($0) }
-                )) {
-                    Text(L10n.text("settings.idle.none")).tag(IdleAudioAction.none)
-                    Text(L10n.text("settings.idle.mute")).tag(IdleAudioAction.mute)
-                    Text(L10n.text("settings.idle.deafen")).tag(IdleAudioAction.deafen)
-                }
-                if session.idleAudioAction != .none {
-                    LabeledContent(L10n.text("settings.idleTimeout")) {
-                        Stepper(
-                            L10n.text("settings.minutes", session.idleTimeoutMinutes),
-                            value: Binding(get: { session.idleTimeoutMinutes }, set: { session.setIdleTimeoutMinutes($0) }),
-                            in: 1 ... 240
-                        )
-                    }
-                }
                 if let deviceError {
                     Text(deviceError)
                         .font(.caption)
@@ -492,14 +276,31 @@ struct SettingsView: View {
             }
             .formStyle(.grouped)
             .tabItem { Label(L10n.text("settings.audio"), systemImage: "waveform") }
+            .tag(SettingsTab.audio)
+
+            connectionSettings
+                .tabItem { Label(L10n.text("settings.connection"), systemImage: "network") }
+                .tag(SettingsTab.connection)
+
+            interfaceSettings
+                .tabItem { Label(L10n.text("settings.interface"), systemImage: "paintbrush") }
+                .tag(SettingsTab.interface)
+
+            shortcutSettings
+                .tabItem { Label(L10n.text("settings.shortcuts"), systemImage: "keyboard") }
+                .tag(SettingsTab.shortcuts)
 
             identityView
-            .tabItem { Label(L10n.text("settings.identity"), systemImage: "person.badge.key") }
+                .tabItem { Label(L10n.text("settings.identity"), systemImage: "person.badge.key") }
+                .tag(SettingsTab.identity)
         }
         .frame(width: 580, height: 420)
         .padding()
         .task { loadDevices() }
-        .onAppear { session.setAudioSettingsVisible(true) }
+        .onAppear { session.setAudioSettingsVisible(selectedTab == .audio) }
+        .onChange(of: selectedTab) { _, tab in
+            session.setAudioSettingsVisible(tab == .audio)
+        }
         .onDisappear { session.setAudioSettingsVisible(false) }
         .sheet(isPresented: Binding(
             get: { session.isShowingAudioWizard },
@@ -573,6 +374,303 @@ struct SettingsView: View {
         } message: {
             Text(identityTransferError ?? L10n.text("error.unknown"))
         }
+    }
+
+    private var connectionSettings: some View {
+        Form {
+            Toggle(
+                L10n.text("settings.autoReconnect"),
+                isOn: Binding(
+                    get: { session.autoReconnectEnabled },
+                    set: { session.setAutoReconnectEnabled($0) }
+                )
+            )
+            Toggle(
+                L10n.text("settings.publicServers"),
+                isOn: Binding(
+                    get: { session.publicServerDirectoryEnabled },
+                    set: { session.setPublicServerDirectoryEnabled($0) }
+                )
+            )
+            Text(L10n.text("settings.publicServers.privacy"))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            LabeledContent(L10n.text("settings.connectionTimeout")) {
+                Stepper(
+                    L10n.text("settings.seconds", session.connectionTimeoutSeconds),
+                    value: Binding(
+                        get: { session.connectionTimeoutSeconds },
+                        set: { session.setConnectionTimeoutSeconds($0) }
+                    ),
+                    in: 5 ... 120,
+                    step: 5
+                )
+            }
+            LabeledContent(L10n.text("settings.pingInterval")) {
+                Stepper(
+                    L10n.text("settings.seconds", session.controlPingIntervalSeconds),
+                    value: Binding(
+                        get: { session.controlPingIntervalSeconds },
+                        set: { session.setControlPingIntervalSeconds($0) }
+                    ),
+                    in: 5 ... 60,
+                    step: 5
+                )
+            }
+            DisclosureGroup(L10n.text("settings.proxy")) {
+                Picker(L10n.text("settings.proxy.type"), selection: Binding(
+                    get: { session.proxyType }, set: { session.proxyType = $0 }
+                )) {
+                    Text(L10n.text("settings.proxy.none")).tag(MumbleProxyType.none)
+                    Text("SOCKS5").tag(MumbleProxyType.socks5)
+                    Text("HTTP CONNECT").tag(MumbleProxyType.httpConnect)
+                }
+                if session.proxyType != .none {
+                    TextField(
+                        L10n.text("settings.proxy.host"),
+                        text: Binding(get: { session.proxyHost }, set: { session.proxyHost = $0 })
+                    )
+                    TextField(
+                        L10n.text("settings.proxy.port"),
+                        value: Binding(
+                            get: { Int(session.proxyPort) },
+                            set: { session.proxyPort = UInt16(clamping: $0) }
+                        ),
+                        format: .number
+                    )
+                    TextField(
+                        L10n.text("settings.proxy.username"),
+                        text: Binding(get: { session.proxyUsername }, set: { session.proxyUsername = $0 })
+                    )
+                    SecureField(L10n.text("settings.proxy.password"), text: $proxyPassword)
+                }
+                Button(L10n.text("settings.proxy.save")) {
+                    session.saveProxy(
+                        type: session.proxyType,
+                        host: session.proxyHost,
+                        port: session.proxyPort,
+                        username: session.proxyUsername,
+                        password: proxyPassword
+                    )
+                    proxyPassword = ""
+                }
+                Text(L10n.text("settings.proxy.help"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if session.serverSuggestedPushToTalk != nil
+                || session.serverSuggestedPositionalAudio != nil
+                || session.serverSuggestedVersion != nil {
+                DisclosureGroup(L10n.text("settings.serverSuggestions")) {
+                    if let ptt = session.serverSuggestedPushToTalk {
+                        LabeledContent(
+                            L10n.text("settings.serverSuggestions.ptt"),
+                            value: ptt ? L10n.text("common.yes") : L10n.text("common.no")
+                        )
+                    }
+                    if let positional = session.serverSuggestedPositionalAudio {
+                        LabeledContent(
+                            L10n.text("settings.serverSuggestions.positional"),
+                            value: positional ? L10n.text("common.yes") : L10n.text("common.no")
+                        )
+                    }
+                    if let version = session.serverSuggestedVersion {
+                        LabeledContent(L10n.text("settings.serverSuggestions.version"), value: "\(version)")
+                    }
+                    Text(L10n.text("settings.serverSuggestions.help"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private var interfaceSettings: some View {
+        Form {
+            Toggle(
+                L10n.text("settings.notifications"),
+                isOn: Binding(
+                    get: { session.notificationsEnabled },
+                    set: { session.setNotificationsEnabled($0) }
+                )
+            )
+            Text(L10n.text("settings.notifications.help"))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Toggle(
+                L10n.text("settings.textToSpeech"),
+                isOn: Binding(
+                    get: { session.textToSpeechEnabled },
+                    set: { session.setTextToSpeechEnabled($0) }
+                )
+            )
+            Text(L10n.text("settings.textToSpeech.help"))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            LabeledContent(L10n.text("settings.chatLogLimit")) {
+                Stepper(
+                    "\(session.chatLogLimit)",
+                    value: Binding(
+                        get: { session.chatLogLimit },
+                        set: { session.setChatLogLimit($0) }
+                    ),
+                    in: 50 ... 5_000,
+                    step: 50
+                )
+            }
+            Toggle(
+                L10n.text("settings.chat24Hour"),
+                isOn: Binding(
+                    get: { session.chatUses24HourTime },
+                    set: { session.setChatUses24HourTime($0) }
+                )
+            )
+            Picker(L10n.text("settings.channelExpansion"), selection: Binding(
+                get: { session.channelExpansionPolicy },
+                set: { session.setChannelExpansionPolicy($0) }
+            )) {
+                Text(L10n.text("settings.channelExpansion.current")).tag(ChannelExpansionPolicy.currentPath)
+                Text(L10n.text("settings.channelExpansion.all")).tag(ChannelExpansionPolicy.all)
+                Text(L10n.text("settings.channelExpansion.collapsed")).tag(ChannelExpansionPolicy.collapsed)
+            }
+            Toggle(
+                L10n.text("settings.showReturnPreviousChannel"),
+                isOn: Binding(
+                    get: { session.showsReturnToPreviousChannelControl },
+                    set: { session.setShowsReturnToPreviousChannelControl($0) }
+                )
+            )
+            Toggle(
+                L10n.text("settings.showHideEmptyChannels"),
+                isOn: Binding(
+                    get: { session.showsHideEmptyChannelsControl },
+                    set: { session.setShowsHideEmptyChannelsControl($0) }
+                )
+            )
+        }
+        .formStyle(.grouped)
+    }
+
+    private var shortcutSettings: some View {
+        Form {
+            Toggle(
+                L10n.text("settings.serverShortcuts"),
+                isOn: Binding(
+                    get: { session.selectedServerUsesShortcutOverride },
+                    set: { session.setSelectedServerShortcutOverrideEnabled($0) }
+                )
+            )
+            .disabled(session.selectedServer == nil)
+            Text(L10n.text("settings.serverShortcuts.help", session.selectedServer?.name ?? ""))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Toggle(
+                L10n.text("settings.globalPushToTalk"),
+                isOn: Binding(
+                    get: { session.isGlobalPushToTalkEnabled },
+                    set: { session.setGlobalPushToTalkEnabled($0) }
+                )
+            )
+            .disabled(session.transmissionMode != .pushToTalk)
+            LabeledContent(L10n.text("settings.globalShortcut")) {
+                ShortcutRecorderView(
+                    shortcut: session.globalPushToTalkShortcut,
+                    onRecordingChanged: session.setRecordingGlobalShortcut,
+                    onChange: session.setGlobalPushToTalkShortcut
+                )
+            }
+            .disabled(session.transmissionMode != .pushToTalk)
+            Text(L10n.text(
+                "settings.globalPushToTalk.help",
+                session.globalPushToTalkShortcut.displayName
+            ))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if let shortcutError = session.globalPushToTalkError {
+                Text(shortcutError)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+            Toggle(
+                L10n.text("settings.pushToMute"),
+                isOn: Binding(
+                    get: { session.isPushToMuteEnabled },
+                    set: { session.setPushToMuteEnabled($0) }
+                )
+            )
+            LabeledContent(L10n.text("settings.pushToMuteShortcut")) {
+                ShortcutRecorderView(
+                    shortcut: session.pushToMuteShortcut,
+                    onRecordingChanged: session.setRecordingPushToMuteShortcut,
+                    onChange: session.setPushToMuteShortcut
+                )
+            }
+            .disabled(!session.isPushToMuteEnabled)
+            Toggle(
+                L10n.text("settings.globalAudioShortcuts"),
+                isOn: Binding(
+                    get: { session.areGlobalAudioShortcutsEnabled },
+                    set: { session.setGlobalAudioShortcutsEnabled($0) }
+                )
+            )
+            ForEach(GlobalAudioShortcutAction.allCases) { action in
+                LabeledContent(L10n.text("settings.shortcut.\(action.rawValue)")) {
+                    ShortcutRecorderView(
+                        shortcut: session.globalAudioShortcuts[action] ?? .default,
+                        onRecordingChanged: session.setRecordingGlobalAudioShortcut,
+                        onChange: { session.setGlobalAudioShortcut($0, for: action) }
+                    )
+                }
+                .disabled(!session.areGlobalAudioShortcutsEnabled)
+            }
+            Toggle(
+                L10n.text("settings.whisperShortcut"),
+                isOn: Binding(
+                    get: { session.isWhisperShortcutEnabled },
+                    set: { session.setWhisperShortcutEnabled($0) }
+                )
+            )
+            LabeledContent(L10n.text("settings.whisperKey")) {
+                ShortcutRecorderView(
+                    shortcut: session.whisperShortcut,
+                    onRecordingChanged: session.setRecordingWhisperShortcut,
+                    onChange: session.setWhisperShortcut
+                )
+            }
+            .disabled(!session.isWhisperShortcutEnabled)
+            if let target = session.configuredVoiceTarget {
+                LabeledContent(L10n.text("settings.whisperTarget"), value: voiceTargetName(target))
+                Button(L10n.text("settings.whisperClear"), role: .destructive) {
+                    session.clearWhisperTarget()
+                }
+            } else {
+                Text(L10n.text("settings.whisperTarget.none"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Picker(L10n.text("settings.idleAction"), selection: Binding(
+                get: { session.idleAudioAction },
+                set: { session.setIdleAudioAction($0) }
+            )) {
+                Text(L10n.text("settings.idle.none")).tag(IdleAudioAction.none)
+                Text(L10n.text("settings.idle.mute")).tag(IdleAudioAction.mute)
+                Text(L10n.text("settings.idle.deafen")).tag(IdleAudioAction.deafen)
+            }
+            if session.idleAudioAction != .none {
+                LabeledContent(L10n.text("settings.idleTimeout")) {
+                    Stepper(
+                        L10n.text("settings.minutes", session.idleTimeoutMinutes),
+                        value: Binding(
+                            get: { session.idleTimeoutMinutes },
+                            set: { session.setIdleTimeoutMinutes($0) }
+                        ),
+                        in: 1 ... 240
+                    )
+                }
+            }
+        }
+        .formStyle(.grouped)
     }
 
     private var inputSelection: Binding<UInt32?> {
@@ -671,6 +769,14 @@ struct SettingsView: View {
             deviceError = error.localizedDescription
         }
     }
+}
+
+private enum SettingsTab: Hashable {
+    case audio
+    case connection
+    case interface
+    case shortcuts
+    case identity
 }
 
 private enum IdentityTransfer: Identifiable {

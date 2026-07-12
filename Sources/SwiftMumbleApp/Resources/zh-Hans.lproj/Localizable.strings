@@ -381,3 +381,6 @@
 "settings.channelExpansion.collapsed" = "折叠子频道";
 "settings.showReturnPreviousChannel" = "显示返回上一频道";
 "settings.showHideEmptyChannels" = "显示隐藏空频道";
+"settings.connection" = "连接";
+"settings.interface" = "界面";
+"settings.shortcuts" = "快捷键";
