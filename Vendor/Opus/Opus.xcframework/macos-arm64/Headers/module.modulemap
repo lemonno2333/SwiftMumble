@@ -1,0 +1,4 @@
+module COpus {
+    umbrella "opus"
+    export *
+}
