@@ -26,7 +26,7 @@ public final class AudioMixClock: @unchecked Sendable {
         guard let timer else { return }
         timer.schedule(
             deadline: .now() + .milliseconds(10),
-            repeating: .milliseconds(10),
+            repeating: .milliseconds(5),
             leeway: .milliseconds(1)
         )
         timer.setEventHandler { [weak self] in

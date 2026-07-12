@@ -49,6 +49,23 @@ import Testing
     #expect(mixer.read() == .samples([0.98]))
 }
 
+@Test func mixerLimiterRecoversGraduallyAfterConcurrentPeak() {
+    let mixer = AudioFrameMixer(frameLength: 1)
+    mixer.register(source: 1)
+    mixer.register(source: 2)
+    mixer.push(source: 1, samples: [1])
+    mixer.push(source: 2, samples: [0.5])
+    #expect(mixer.read() == .samples([0.98]))
+
+    mixer.push(source: 1, samples: [0.5])
+    guard case .samples(let recovering) = mixer.read() else {
+        Issue.record("Expected a limiter recovery frame")
+        return
+    }
+    #expect(recovering[0] > 0.32)
+    #expect(recovering[0] < 0.5)
+}
+
 @Test func mixerExcludesMutedSourceButKeepsOthers() {
     let mixer = AudioFrameMixer(frameLength: 2)
     mixer.register(source: 1)

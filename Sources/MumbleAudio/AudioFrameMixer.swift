@@ -17,6 +17,7 @@ public final class AudioFrameMixer: @unchecked Sendable {
     private var duckingGain: Float = 0.35
     private var isDucking = false
     private var droppedFrames = 0
+    private var limiterGain: Float = 1
 
     public init(frameLength: Int = 480, maximumQueuedFramesPerSource: Int = 6) {
         precondition(frameLength > 0)
@@ -40,6 +41,7 @@ public final class AudioFrameMixer: @unchecked Sendable {
             _ = queues.removeValue(forKey: source)
             gains.removeValue(forKey: source)
             mutedSources.remove(source)
+            if queues.isEmpty { limiterGain = 1 }
         }
     }
 
@@ -48,6 +50,7 @@ public final class AudioFrameMixer: @unchecked Sendable {
             queues.removeAll()
             gains.removeAll()
             mutedSources.removeAll()
+            limiterGain = 1
         }
     }
 
@@ -114,9 +117,14 @@ public final class AudioFrameMixer: @unchecked Sendable {
                 mixed[index] *= outputGain
                 peak = max(peak, abs(mixed[index]))
             }
-            if peak > 0.98 {
-                let limiterGain: Float = 0.98 / peak
-                for index in mixed.indices { mixed[index] *= limiterGain }
+            let targetGain: Float = peak > 0.98 ? 0.98 / peak : 1
+            if targetGain < limiterGain {
+                limiterGain = targetGain
+            } else {
+                limiterGain += (targetGain - limiterGain) * 0.05
+            }
+            for index in mixed.indices {
+                mixed[index] = min(0.98, max(-0.98, mixed[index] * limiterGain))
             }
             return .samples(mixed)
         }

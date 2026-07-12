@@ -14,12 +14,37 @@ public final class AudioCaptureService: @unchecked Sendable {
     public typealias FrameHandler = @Sendable ([Float]) -> Void
 
     private let engine = AVAudioEngine()
+    private let playbackSource: AVAudioSourceNode
+    private let playbackRing: AudioSampleRingBuffer
     private let lock = NSLock()
     private var accumulator = AudioFrameAccumulator()
     private var frameHandler: FrameHandler?
     private var selectedDeviceID: AudioDeviceID?
+    private var isCaptureActive = false
+    private var isPlaybackActive = false
+    private var isTapInstalled = false
 
-    public init() {}
+    public init() {
+        let format = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: 48_000,
+            channels: 1,
+            interleaved: false
+        )!
+        let ring = AudioSampleRingBuffer(capacity: 48_000 * 2)
+        playbackRing = ring
+        playbackSource = AVAudioSourceNode(format: format) { _, _, frameCount, audioBufferList in
+            let buffers = UnsafeMutableAudioBufferListPointer(audioBufferList)
+            guard let buffer = buffers.first,
+                  let data = buffer.mData?.assumingMemoryBound(to: Float.self) else {
+                return noErr
+            }
+            ring.render(into: data, count: Int(frameCount))
+            return noErr
+        }
+        engine.attach(playbackSource)
+        engine.connect(playbackSource, to: engine.mainMixerNode, format: format)
+    }
 
     public func selectDevice(_ deviceID: AudioDeviceID?) {
         selectedDeviceID = deviceID
@@ -67,20 +92,73 @@ public final class AudioCaptureService: @unchecked Sendable {
         input.installTap(onBus: 0, bufferSize: 1_024, format: inputFormat) { [weak self] buffer, _ in
             self?.convert(buffer, using: converter, outputFormat: outputFormat)
         }
+        isTapInstalled = true
+        isCaptureActive = true
 
-        engine.prepare()
-        try engine.start()
+        do {
+            try startEngineIfNeeded()
+        } catch {
+            input.removeTap(onBus: 0)
+            isTapInstalled = false
+            isCaptureActive = false
+            self.frameHandler = nil
+            throw error
+        }
     }
 
     public func stop() {
-        if engine.isRunning {
-            engine.stop()
+        if isTapInstalled {
+            engine.inputNode.removeTap(onBus: 0)
+            isTapInstalled = false
         }
-        engine.inputNode.removeTap(onBus: 0)
+        isCaptureActive = false
         lock.withLock {
             accumulator.reset()
         }
         frameHandler = nil
+        if !isPlaybackActive, engine.isRunning { engine.stop() }
+    }
+
+    public func startPlayback() throws {
+        isPlaybackActive = true
+        do {
+            try startEngineIfNeeded()
+        } catch {
+            isPlaybackActive = false
+            throw error
+        }
+    }
+
+    public func stopPlayback() {
+        isPlaybackActive = false
+        playbackRing.reset()
+        if !isCaptureActive, engine.isRunning { engine.stop() }
+    }
+
+    public func selectOutputDevice(_ deviceID: AudioDeviceID?) throws {
+        guard let deviceID else { return }
+        let wasRunning = engine.isRunning
+        if wasRunning { engine.stop() }
+        try AudioDeviceManager.select(deviceID, on: engine.outputNode.audioUnit)
+        if wasRunning { try startEngineIfNeeded() }
+    }
+
+    public func enqueuePlayback(samples: [Float]) {
+        playbackRing.enqueue(samples)
+    }
+
+    public func setPlaybackMuted(_ muted: Bool) {
+        playbackRing.setMuted(muted)
+    }
+
+    public var bufferedPlaybackSampleCount: Int {
+        playbackRing.availableSampleCount
+    }
+
+    private func startEngineIfNeeded() throws {
+        guard !engine.isRunning else { return }
+        engine.prepare()
+        try engine.start()
     }
 
     private func convert(

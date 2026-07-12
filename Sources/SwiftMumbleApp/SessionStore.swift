@@ -212,7 +212,6 @@ final class SessionStore {
     @ObservationIgnored private let messageSpeechService = MessageSpeechService()
     @ObservationIgnored private let audioCueService = AudioCueService()
     @ObservationIgnored private let transmitEncodingQueue = AudioTransmitEncodingQueue()
-    @ObservationIgnored private var audioPlayback: AudioPlaybackService?
     @ObservationIgnored private var audioReceivePipelines: [UInt32: AudioReceivePipeline] = [:]
     @ObservationIgnored private var audioDrainTasks: [UInt32: Task<Void, Never>] = [:]
     @ObservationIgnored private let audioMixer = AudioFrameMixer()
@@ -1195,8 +1194,7 @@ final class SessionStore {
         endTransmission()
         stopUDP()
         audioMixClock.stop()
-        audioPlayback?.stop()
-        audioPlayback = nil
+        audioCapture.stopPlayback()
         audioDrainTasks.values.forEach { $0.cancel() }
         audioDrainTasks.removeAll()
         audioReceivePipelines.removeAll()
@@ -1604,7 +1602,7 @@ final class SessionStore {
     func setDeafened(_ deafened: Bool) {
         guard deafened != isDeafened else { return }
         isDeafened = deafened
-        audioPlayback?.setMuted(deafened)
+        audioCapture.setPlaybackMuted(deafened)
         if deafened {
             // Deafen implies mute, matching official behavior.
             if !isMuted { endTransmission() }
@@ -1625,6 +1623,7 @@ final class SessionStore {
         }
         if user.isSelfDeafened != isDeafened {
             isDeafened = user.isSelfDeafened
+            audioCapture.setPlaybackMuted(isDeafened)
         }
     }
 
@@ -2872,6 +2871,10 @@ final class SessionStore {
                 audioReceivePipelines.removeValue(forKey: session)
                 audioDrainTasks.removeValue(forKey: session)
                 audioMixer.unregister(source: session)
+                if audioReceivePipelines.isEmpty {
+                    audioMixClock.stop()
+                    audioCapture.stopPlayback()
+                }
                 if talkingTracker.clear(session: session) { rebuildChannels() }
             }
             var waitingReads = 0
@@ -2902,29 +2905,24 @@ final class SessionStore {
     private func startAudioMixLoop() {
         guard !audioMixClock.isRunning else { return }
         do {
-            let playback: AudioPlaybackService
-            if let existing = audioPlayback {
-                playback = existing
-            } else {
-                playback = try AudioPlaybackService()
-                try playback.selectDevice(selectedOutputDeviceID)
-                audioPlayback = playback
-            }
-            playback.setMuted(isDeafened)
-            try playback.start()
+            try audioCapture.selectOutputDevice(selectedOutputDeviceID)
+            audioCapture.setPlaybackMuted(isDeafened)
+            try audioCapture.startPlayback()
             let mixer = audioMixer
             let echoCanceller = echoCanceller
-            let silence = [Float](repeating: 0, count: 480)
+            let audioIO = audioCapture
+            let targetBufferedSamples = 480 * 3
             audioMixClock.start {
-                switch mixer.read() {
-                case .inactive:
-                    playback.stop()
-                    return false
-                case .waiting:
-                    try? playback.enqueue(samples: silence)
-                case .samples(let samples):
-                    echoCanceller.updateReference(samples)
-                    try? playback.enqueue(samples: samples)
+                while audioIO.bufferedPlaybackSampleCount < targetBufferedSamples {
+                    switch mixer.read() {
+                    case .inactive:
+                        return false
+                    case .waiting:
+                        return true
+                    case .samples(let samples):
+                        echoCanceller.updateReference(samples)
+                        audioIO.enqueuePlayback(samples: samples)
+                    }
                 }
                 return true
             }
@@ -3062,7 +3060,7 @@ final class SessionStore {
     func selectOutputDevice(_ deviceID: UInt32?) {
         selectedOutputDeviceID = deviceID
         do {
-            try audioPlayback?.selectDevice(deviceID)
+            try audioCapture.selectOutputDevice(deviceID)
             saveDeviceSelection(deviceID, key: "selectedOutputDeviceID")
         } catch {
             audioErrorMessage = error.localizedDescription
