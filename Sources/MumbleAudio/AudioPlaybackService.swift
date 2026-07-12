@@ -63,6 +63,10 @@ public final class AudioPlaybackService: @unchecked Sendable {
         ring.enqueue(samples)
     }
 
+    public func setMuted(_ muted: Bool) {
+        ring.setMuted(muted)
+    }
+
     public var bufferedSampleCount: Int { ring.availableSampleCount }
 }
 
@@ -76,6 +80,7 @@ final class AudioSampleRingBuffer: @unchecked Sendable {
     private var wasUnderflowing = true
     private var underflowRampRemaining = 0
     private var fadeInRemaining = 0
+    private var isMuted = false
     private let rampSamples = 32
 
     init(capacity: Int) {
@@ -107,6 +112,11 @@ final class AudioSampleRingBuffer: @unchecked Sendable {
                     let raw = storage[readIndex]
                     readIndex = (readIndex + 1) % storage.count
                     available -= 1
+                    if isMuted {
+                        output[index] = 0
+                        lastOutput = 0
+                        continue
+                    }
                     if wasUnderflowing {
                         wasUnderflowing = false
                         fadeInRemaining = rampSamples
@@ -149,6 +159,17 @@ final class AudioSampleRingBuffer: @unchecked Sendable {
             wasUnderflowing = true
             underflowRampRemaining = 0
             fadeInRemaining = 0
+        }
+    }
+
+    func setMuted(_ muted: Bool) {
+        lock.withLock {
+            guard isMuted != muted else { return }
+            isMuted = muted
+            lastOutput = 0
+            underflowRampRemaining = 0
+            fadeInRemaining = 0
+            wasUnderflowing = true
         }
     }
 }

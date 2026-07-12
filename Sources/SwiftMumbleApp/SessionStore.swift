@@ -216,7 +216,7 @@ final class SessionStore {
     @ObservationIgnored private var audioReceivePipelines: [UInt32: AudioReceivePipeline] = [:]
     @ObservationIgnored private var audioDrainTasks: [UInt32: Task<Void, Never>] = [:]
     @ObservationIgnored private let audioMixer = AudioFrameMixer()
-    @ObservationIgnored private var audioMixTask: Task<Void, Never>?
+    @ObservationIgnored private let audioMixClock = AudioMixClock()
     @ObservationIgnored private var serverProtocolVersion = MumbleProtocolVersion(major: 1, minor: 4, patch: 0)
     @ObservationIgnored private var pendingConnectionPassword = ""
     @ObservationIgnored private var cryptState: MumbleCryptState?
@@ -1194,13 +1194,12 @@ final class SessionStore {
         stopAutomaticAudioCapture()
         endTransmission()
         stopUDP()
+        audioMixClock.stop()
         audioPlayback?.stop()
         audioPlayback = nil
         audioDrainTasks.values.forEach { $0.cancel() }
         audioDrainTasks.removeAll()
         audioReceivePipelines.removeAll()
-        audioMixTask?.cancel()
-        audioMixTask = nil
         audioMixer.removeAllSources()
         userVolumeGains.removeAll()
         locallyMutedSessions.removeAll()
@@ -1605,6 +1604,7 @@ final class SessionStore {
     func setDeafened(_ deafened: Bool) {
         guard deafened != isDeafened else { return }
         isDeafened = deafened
+        audioPlayback?.setMuted(deafened)
         if deafened {
             // Deafen implies mute, matching official behavior.
             if !isMuted { endTransmission() }
@@ -2795,7 +2795,6 @@ final class SessionStore {
             audioReceivePipelines[incoming.senderSession] = pipeline
             audioMixer.register(source: incoming.senderSession)
             seedMixerSettings(session: incoming.senderSession)
-            startAudioMixLoop()
             startAudioDrain(session: incoming.senderSession, pipeline: pipeline)
         }
 
@@ -2886,6 +2885,7 @@ final class SessionStore {
                     case .samples(let samples):
                         waitingReads = 0
                         audioMixer.push(source: session, samples: samples)
+                        startAudioMixLoop()
                     case .finished:
                         return
                     }
@@ -2900,43 +2900,37 @@ final class SessionStore {
     }
 
     private func startAudioMixLoop() {
-        guard audioMixTask == nil else { return }
-        audioMixTask = Task {
-            defer { audioMixTask = nil }
-            while !Task.isCancelled {
-                do {
-                    switch audioMixer.read() {
-                    case .inactive:
-                        audioPlayback?.stop()
-                        audioPlayback = nil
-                        return
-                    case .waiting:
-                        try await Task.sleep(for: .milliseconds(2))
-                    case .samples(let samples):
-                        if echoCancellationEnabled { echoCanceller.updateReference(samples) }
-                        if !isDeafened { try playIncomingSamples(samples) }
-                    }
-                } catch is CancellationError {
-                    return
-                } catch {
-                    audioErrorMessage = error.localizedDescription
-                    return
-                }
+        guard !audioMixClock.isRunning else { return }
+        do {
+            let playback: AudioPlaybackService
+            if let existing = audioPlayback {
+                playback = existing
+            } else {
+                playback = try AudioPlaybackService()
+                try playback.selectDevice(selectedOutputDeviceID)
+                audioPlayback = playback
             }
-        }
-    }
-
-    private func playIncomingSamples(_ samples: [Float]) throws {
-        let playback: AudioPlaybackService
-        if let existing = audioPlayback {
-            playback = existing
-        } else {
-            playback = try AudioPlaybackService()
-            try playback.selectDevice(selectedOutputDeviceID)
+            playback.setMuted(isDeafened)
             try playback.start()
-            audioPlayback = playback
+            let mixer = audioMixer
+            let echoCanceller = echoCanceller
+            let silence = [Float](repeating: 0, count: 480)
+            audioMixClock.start {
+                switch mixer.read() {
+                case .inactive:
+                    playback.stop()
+                    return false
+                case .waiting:
+                    try? playback.enqueue(samples: silence)
+                case .samples(let samples):
+                    echoCanceller.updateReference(samples)
+                    try? playback.enqueue(samples: samples)
+                }
+                return true
+            }
+        } catch {
+            audioErrorMessage = error.localizedDescription
         }
-        try playback.enqueue(samples: samples)
     }
 
     private func handleCryptSetup(_ frame: MumbleFrame) throws {

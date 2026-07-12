@@ -109,8 +109,14 @@ public final class AudioFrameMixer: @unchecked Sendable {
                 }
             }
             let outputGain = masterGain * (isDucking ? duckingGain : 1)
+            var peak: Float = 0
             for index in mixed.indices {
-                mixed[index] = min(1, max(-1, mixed[index] * outputGain))
+                mixed[index] *= outputGain
+                peak = max(peak, abs(mixed[index]))
+            }
+            if peak > 0.98 {
+                let limiterGain: Float = 0.98 / peak
+                for index in mixed.indices { mixed[index] *= limiterGain }
             }
             return .samples(mixed)
         }

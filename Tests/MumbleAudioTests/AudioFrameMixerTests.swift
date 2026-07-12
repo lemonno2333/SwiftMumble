@@ -1,7 +1,7 @@
 import Testing
 @testable import MumbleAudio
 
-@Test func mixerCombinesConcurrentSourcesAndClipsOutput() {
+@Test func mixerCombinesConcurrentSourcesAndLimitsOutputWithoutHardClipping() {
     let mixer = AudioFrameMixer(frameLength: 4)
     mixer.register(source: 1)
     mixer.register(source: 2)
@@ -12,7 +12,7 @@ import Testing
         Issue.record("Expected a mixed audio frame")
         return
     }
-    let expected: [Float] = [0.7, -1, 1, -0.1]
+    let expected: [Float] = [0.49, -0.91, 0.98, -0.07]
     #expect(zip(mixed, expected).allSatisfy { abs($0 - $1) < 0.000_001 })
 }
 
@@ -45,8 +45,8 @@ import Testing
     mixer.setGain(100, source: 1)
     mixer.push(source: 1, samples: [0.5])
 
-    // Gain clamps to 3, then 0.5 * 3 = 1.5 clips to 1.
-    #expect(mixer.read() == .samples([1]))
+    // Gain clamps to 3, then the frame limiter reduces the 1.5 peak to 0.98.
+    #expect(mixer.read() == .samples([0.98]))
 }
 
 @Test func mixerExcludesMutedSourceButKeepsOthers() {

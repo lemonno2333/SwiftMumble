@@ -4,6 +4,7 @@ import SwiftUI
 struct ChannelBrowser: View {
     @Environment(SessionStore.self) private var session
     @State private var highlightedChannelID: MumbleChannel.ID?
+    @State private var highlightedUserID: UInt32?
 
     var body: some View {
         @Bindable var session = session
@@ -12,12 +13,19 @@ struct ChannelBrowser: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 1) {
                     ForEach(session.visibleChannels) { channel in
-                        ChannelNode(channel: channel, highlightedChannelID: $highlightedChannelID)
+                        ChannelNode(
+                            channel: channel,
+                            highlightedChannelID: $highlightedChannelID,
+                            highlightedUserID: $highlightedUserID
+                        )
                     }
                     Spacer(minLength: 40)
                         .frame(maxWidth: .infinity)
                         .contentShape(Rectangle())
-                        .onTapGesture { highlightedChannelID = nil }
+                        .onTapGesture {
+                            highlightedChannelID = nil
+                            highlightedUserID = nil
+                        }
                 }
                 .padding(.horizontal, 8)
                 .padding(.vertical, 6)
@@ -104,6 +112,7 @@ private struct ChannelNode: View {
     @Environment(SessionStore.self) private var session
     let channel: MumbleChannel
     @Binding var highlightedChannelID: MumbleChannel.ID?
+    @Binding var highlightedUserID: UInt32?
 
     var body: some View {
         if channel.children.isEmpty && channel.users.isEmpty {
@@ -120,10 +129,18 @@ private struct ChannelNode: View {
                 set: { session.setChannelExpanded(channel, expanded: $0) }
             )) {
                 ForEach(channel.users) { user in
-                    UserRow(user: user)
+                    UserRow(
+                        user: user,
+                        highlightedUserID: $highlightedUserID,
+                        highlightedChannelID: $highlightedChannelID
+                    )
                 }
                 ForEach(channel.children) { child in
-                    ChannelNode(channel: child, highlightedChannelID: $highlightedChannelID)
+                    ChannelNode(
+                        channel: child,
+                        highlightedChannelID: $highlightedChannelID,
+                        highlightedUserID: $highlightedUserID
+                    )
                 }
             } label: {
                 ChannelLabel(channel: channel)
@@ -150,9 +167,11 @@ private struct ChannelNode: View {
         TapGesture(count: 2).exclusively(before: TapGesture(count: 1)).onEnded { click in
             switch click {
             case .first:
+                highlightedUserID = nil
                 highlightedChannelID = channel.id
                 joinChannel()
             case .second:
+                highlightedUserID = nil
                 highlightedChannelID = channel.id
             }
         }
@@ -317,6 +336,8 @@ private struct ChannelLabel: View {
 private struct UserRow: View {
     @Environment(SessionStore.self) private var session
     let user: MumbleUser
+    @Binding var highlightedUserID: UInt32?
+    @Binding var highlightedChannelID: MumbleChannel.ID?
 
     private static let volumePresets: [Float] = [0.5, 0.75, 1, 1.25, 1.5, 2]
 
@@ -387,6 +408,23 @@ private struct UserRow: View {
         }
         .padding(.leading, 20)
         .padding(.vertical, 2)
+        .padding(.horizontal, 5)
+        .contentShape(.rect)
+        .background {
+            RoundedRectangle(cornerRadius: 6)
+                .fill(highlightedUserID == user.id ? Color.accentColor.opacity(0.12) : .clear)
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(
+                    highlightedUserID == user.id ? Color.accentColor.opacity(0.35) : .clear,
+                    lineWidth: 1
+                )
+        }
+        .onTapGesture {
+            highlightedChannelID = nil
+            highlightedUserID = user.id
+        }
         .contextMenu { contextMenu(isLocallyMuted: isLocallyMuted) }
         .draggable("user:\(user.id)")
     }
