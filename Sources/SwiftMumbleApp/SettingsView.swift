@@ -368,6 +368,20 @@ struct SettingsView: View {
                     Text(L10n.text("settings.channelExpansion.collapsed")).tag(ChannelExpansionPolicy.collapsed)
                 }
                 Toggle(
+                    L10n.text("settings.showReturnPreviousChannel"),
+                    isOn: Binding(
+                        get: { session.showsReturnToPreviousChannelControl },
+                        set: { session.setShowsReturnToPreviousChannelControl($0) }
+                    )
+                )
+                Toggle(
+                    L10n.text("settings.showHideEmptyChannels"),
+                    isOn: Binding(
+                        get: { session.showsHideEmptyChannelsControl },
+                        set: { session.setShowsHideEmptyChannelsControl($0) }
+                    )
+                )
+                Toggle(
                     L10n.text("settings.serverShortcuts"),
                     isOn: Binding(
                         get: { session.selectedServerUsesShortcutOverride },

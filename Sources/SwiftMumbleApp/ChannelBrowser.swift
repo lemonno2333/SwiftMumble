@@ -25,12 +25,14 @@ struct ChannelBrowser: View {
             }
         }
         .toolbar {
-            ToolbarItem(placement: .secondaryAction) {
-                Toggle(isOn: Binding(
-                    get: { session.hideEmptyChannels },
-                    set: { session.setHideEmptyChannels($0) }
-                )) {
-                    Label(L10n.text("channel.hideEmpty"), systemImage: "line.3.horizontal.decrease.circle")
+            if session.showsHideEmptyChannelsControl {
+                ToolbarItem(placement: .secondaryAction) {
+                    Toggle(isOn: Binding(
+                        get: { session.hideEmptyChannels },
+                        set: { session.setHideEmptyChannels($0) }
+                    )) {
+                        Label(L10n.text("channel.hideEmpty"), systemImage: "line.3.horizontal.decrease.circle")
+                    }
                 }
             }
         }

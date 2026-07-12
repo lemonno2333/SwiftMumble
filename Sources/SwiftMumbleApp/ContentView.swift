@@ -19,14 +19,16 @@ struct ContentView: View {
         .navigationSplitViewStyle(.balanced)
         .background(WindowBackdrop())
         .toolbar {
-            ToolbarItem(placement: .navigation) {
-                Button {
-                    session.returnToPreviousChannel()
-                } label: {
-                    Label(L10n.text("channel.returnPrevious"), systemImage: "arrow.uturn.backward")
+            if session.showsReturnToPreviousChannelControl {
+                ToolbarItem(placement: .navigation) {
+                    Button {
+                        session.returnToPreviousChannel()
+                    } label: {
+                        Label(L10n.text("channel.returnPrevious"), systemImage: "arrow.uturn.backward")
+                    }
+                    .disabled(!session.canReturnToPreviousChannel)
+                    .help(L10n.text("channel.returnPrevious.help"))
                 }
-                .disabled(!session.canReturnToPreviousChannel)
-                .help(L10n.text("channel.returnPrevious.help"))
             }
 
             ToolbarItemGroup(placement: .primaryAction) {

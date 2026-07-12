@@ -149,6 +149,8 @@ final class SessionStore {
     var serverMaximumBandwidth: UInt32?
     var serverRecordingAllowed = false
     var channelExpansionPolicy: ChannelExpansionPolicy = .currentPath
+    var showsReturnToPreviousChannelControl = false
+    var showsHideEmptyChannelsControl = false
     var expandedChannelIDs: Set<UInt32> = []
     var isRecordingGlobalShortcut = false
     var transmissionMode: AudioTransmissionMode = .pushToTalk
@@ -359,8 +361,11 @@ final class SessionStore {
         chatLogLimit = min(5_000, max(50, defaults.object(forKey: "chatLogLimit") as? Int ?? 500))
         chatUses24HourTime = defaults.bool(forKey: "chatUses24HourTime")
         channelExpansionPolicy = ChannelExpansionPolicy(rawValue: defaults.string(forKey: "channelExpansionPolicy") ?? "") ?? .currentPath
+        showsReturnToPreviousChannelControl = defaults.bool(forKey: "showsReturnToPreviousChannelControl")
+        showsHideEmptyChannelsControl = defaults.bool(forKey: "showsHideEmptyChannelsControl")
         audioCuesEnabled = defaults.bool(forKey: "audioCuesEnabled")
         hideEmptyChannels = defaults.bool(forKey: "hideEmptyChannels")
+        if !showsHideEmptyChannelsControl { hideEmptyChannels = false }
         globalShortcutConfiguration = currentShortcutConfiguration
         applyShortcutConfigurationForSelectedServer(rebind: false)
         loadChannelPreferences()
@@ -431,6 +436,17 @@ final class SessionStore {
     func setHideEmptyChannels(_ hidden: Bool) {
         hideEmptyChannels = hidden
         UserDefaults.standard.set(hidden, forKey: "hideEmptyChannels")
+    }
+
+    func setShowsReturnToPreviousChannelControl(_ visible: Bool) {
+        showsReturnToPreviousChannelControl = visible
+        UserDefaults.standard.set(visible, forKey: "showsReturnToPreviousChannelControl")
+    }
+
+    func setShowsHideEmptyChannelsControl(_ visible: Bool) {
+        showsHideEmptyChannelsControl = visible
+        UserDefaults.standard.set(visible, forKey: "showsHideEmptyChannelsControl")
+        if !visible { setHideEmptyChannels(false) }
     }
 
     func toggleChannelHidden(_ channel: MumbleChannel) {

@@ -379,3 +379,5 @@
 "settings.channelExpansion.current" = "当前频道路径";
 "settings.channelExpansion.all" = "全部展开";
 "settings.channelExpansion.collapsed" = "折叠子频道";
+"settings.showReturnPreviousChannel" = "显示返回上一频道";
+"settings.showHideEmptyChannels" = "显示隐藏空频道";

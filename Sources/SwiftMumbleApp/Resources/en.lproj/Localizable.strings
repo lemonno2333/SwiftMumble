@@ -379,3 +379,5 @@
 "settings.channelExpansion.current" = "Current Channel Path";
 "settings.channelExpansion.all" = "Expand All";
 "settings.channelExpansion.collapsed" = "Collapse Subchannels";
+"settings.showReturnPreviousChannel" = "Show Return to Previous Channel";
+"settings.showHideEmptyChannels" = "Show Hide Empty Channels";

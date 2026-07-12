@@ -379,3 +379,5 @@
 "settings.channelExpansion.current" = "現在のチャンネル経路";
 "settings.channelExpansion.all" = "すべて展開";
 "settings.channelExpansion.collapsed" = "子チャンネルを折りたたむ";
+"settings.showReturnPreviousChannel" = "前のチャンネルに戻る操作を表示";
+"settings.showHideEmptyChannels" = "空のチャンネルを隠す操作を表示";

@@ -22,11 +22,13 @@ struct SwiftMumbleApp: App {
                 }
                 .keyboardShortcut("k", modifiers: [.command])
 
-                Button(L10n.text("channel.returnPrevious")) {
-                    session.returnToPreviousChannel()
+                if session.showsReturnToPreviousChannelControl {
+                    Button(L10n.text("channel.returnPrevious")) {
+                        session.returnToPreviousChannel()
+                    }
+                    .keyboardShortcut("[", modifiers: [.command])
+                    .disabled(!session.canReturnToPreviousChannel)
                 }
-                .keyboardShortcut("[", modifiers: [.command])
-                .disabled(!session.canReturnToPreviousChannel)
             }
 
             CommandMenu(L10n.text("settings.audio")) {
