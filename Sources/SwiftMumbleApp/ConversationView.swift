@@ -52,13 +52,14 @@ struct ConversationView: View {
 private struct ChatComposer: View {
     @Environment(SessionStore.self) private var session
     @State private var editorHeight: CGFloat = 24
+    @State private var isComposing = false
 
     var body: some View {
         @Bindable var session = session
 
         HStack(alignment: .bottom, spacing: 10) {
             ZStack(alignment: .topLeading) {
-                if session.chatDraft.isEmpty {
+                if session.chatDraft.isEmpty && !isComposing {
                     Text(L10n.text("chat.placeholder"))
                         .foregroundStyle(.tertiary)
                         .padding(.top, 2)
@@ -70,7 +71,8 @@ private struct ChatComposer: View {
                     onSubmit: sendIfPossible,
                     onComplete: session.completeChatUsername,
                     onHistoryUp: { session.navigateChatHistory(older: true) },
-                    onHistoryDown: { session.navigateChatHistory(older: false) }
+                    onHistoryDown: { session.navigateChatHistory(older: false) },
+                    onCompositionChange: { isComposing = $0 }
                 )
             }
                 .frame(height: editorHeight)

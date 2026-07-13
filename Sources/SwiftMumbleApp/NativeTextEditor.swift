@@ -9,6 +9,7 @@ struct NativeTextEditor: NSViewRepresentable {
     var onComplete: (() -> Void)?
     var onHistoryUp: (() -> Void)?
     var onHistoryDown: (() -> Void)?
+    var onCompositionChange: ((Bool) -> Void)?
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
 
@@ -19,7 +20,10 @@ struct NativeTextEditor: NSViewRepresentable {
         scrollView.autohidesScrollers = true
         scrollView.borderType = .noBorder
 
-        let textView = NSTextView()
+        let textView = NativeComposerTextView()
+        textView.compositionChanged = { [weak coordinator = context.coordinator] active in
+            coordinator?.parent.onCompositionChange?(active)
+        }
         textView.delegate = context.coordinator
         textView.drawsBackground = false
         textView.isRichText = false
@@ -36,6 +40,7 @@ struct NativeTextEditor: NSViewRepresentable {
         textView.string = text
         scrollView.documentView = textView
         context.coordinator.textView = textView
+        context.coordinator.installMouseMonitor()
         context.coordinator.updateHeight()
         return scrollView
     }
@@ -43,7 +48,11 @@ struct NativeTextEditor: NSViewRepresentable {
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         context.coordinator.parent = self
         guard let textView = scrollView.documentView as? NSTextView else { return }
-        if textView.string != text {
+        // During IME composition the marked text lives in NSTextView before
+        // it is committed to the SwiftUI binding. Writing the older binding
+        // value back here destroys the first composing character while the
+        // input method still owns its candidate session.
+        if !textView.hasMarkedText(), textView.string != text {
             let selection = textView.selectedRange()
             textView.string = text
             textView.setSelectedRange(NSRange(location: min(selection.location, text.utf16.count), length: 0))
@@ -51,12 +60,40 @@ struct NativeTextEditor: NSViewRepresentable {
         context.coordinator.updateHeight()
     }
 
+    static func dismantleNSView(_ scrollView: NSScrollView, coordinator: Coordinator) {
+        coordinator.removeMouseMonitor()
+    }
+
     @MainActor
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: NativeTextEditor
         weak var textView: NSTextView?
+        private var mouseMonitor: Any?
 
         init(parent: NativeTextEditor) { self.parent = parent }
+
+        func installMouseMonitor() {
+            guard mouseMonitor == nil else { return }
+            mouseMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) {
+                [weak self] event in
+                guard let self,
+                      let textView = self.textView,
+                      let window = textView.window,
+                      event.window === window,
+                      window.firstResponder === textView else { return event }
+                let point = textView.convert(event.locationInWindow, from: nil)
+                if !textView.bounds.contains(point) {
+                    window.makeFirstResponder(nil)
+                }
+                return event
+            }
+        }
+
+        func removeMouseMonitor() {
+            guard let mouseMonitor else { return }
+            NSEvent.removeMonitor(mouseMonitor)
+            self.mouseMonitor = nil
+        }
 
         func textDidChange(_ notification: Notification) {
             guard let textView else { return }
@@ -99,5 +136,28 @@ struct NativeTextEditor: NSViewRepresentable {
             guard parent.contentHeight != height else { return }
             DispatchQueue.main.async { [weak self] in self?.parent.contentHeight = height }
         }
+    }
+}
+
+private final class NativeComposerTextView: NSTextView {
+    var compositionChanged: ((Bool) -> Void)?
+
+    override func setMarkedText(
+        _ string: Any,
+        selectedRange: NSRange,
+        replacementRange: NSRange
+    ) {
+        super.setMarkedText(string, selectedRange: selectedRange, replacementRange: replacementRange)
+        compositionChanged?(hasMarkedText())
+    }
+
+    override func unmarkText() {
+        super.unmarkText()
+        compositionChanged?(false)
+    }
+
+    override func insertText(_ insertString: Any, replacementRange: NSRange) {
+        super.insertText(insertString, replacementRange: replacementRange)
+        compositionChanged?(hasMarkedText())
     }
 }

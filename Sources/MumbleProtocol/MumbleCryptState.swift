@@ -13,7 +13,11 @@ public struct MumbleCryptStats: Equatable, Sendable {
 }
 
 public final class MumbleCryptState: @unchecked Sendable {
-    private let lock = NSLock()
+    // Mumble maintains independent client and server nonce streams. Keeping
+    // them behind one lock lets continuous uplink encryption starve downlink
+    // decryption, effectively turning the connection half-duplex.
+    private let encryptLock = NSLock()
+    private let decryptLock = NSLock()
     private let key: [UInt8]
     private var encryptNonce: [UInt8]
     private var decryptNonce: [UInt8]
@@ -30,22 +34,22 @@ public final class MumbleCryptState: @unchecked Sendable {
     }
 
     public var stats: MumbleCryptStats {
-        lock.withLock { currentStats }
+        decryptLock.withLock { currentStats }
     }
 
     public var clientNonce: Data {
-        lock.withLock { Data(encryptNonce) }
+        encryptLock.withLock { Data(encryptNonce) }
     }
 
     public func updateServerNonce(_ nonce: Data) throws {
         guard nonce.count == 16 else { throw MumbleCryptError.invalidKeyOrNonceLength }
-        lock.withLock {
+        decryptLock.withLock {
             decryptNonce = Array(nonce)
         }
     }
 
     public func encrypt(_ plaintext: Data) throws -> Data {
-        try lock.withLock {
+        try encryptLock.withLock {
             incrementLittleEndian(&encryptNonce)
             let result = try MumbleOCB2.encrypt(
                 plaintext: Array(plaintext),
@@ -60,7 +64,7 @@ public final class MumbleCryptState: @unchecked Sendable {
     }
 
     public func decrypt(_ packet: Data) throws -> Data? {
-        try lock.withLock {
+        try decryptLock.withLock {
             guard packet.count >= 4 else { return nil }
             let bytes = Array(packet)
             let savedNonce = decryptNonce

@@ -1,5 +1,5 @@
 {
-  "originHash" : "eece1a407e8364140651763e15d8504a2c30446bbf08696700c15ba245244212",
+  "originHash" : "27adc6a75213cf3c7541907ce77c4a6ae3905aa2f68f0411277ddf50379a2fca",
   "pins" : [
     {
       "identity" : "swift-protobuf",
@@ -8,6 +8,15 @@
       "state" : {
         "revision" : "55d7a1cc5666b85c13464aea1c4b4a90feccb4c8",
         "version" : "1.38.1"
+      }
+    },
+    {
+      "identity" : "touchbarhelper",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/ddddxxx/TouchBarHelper.git",
+      "state" : {
+        "revision" : "003d41193ac1c6ab9cc570a1923587298014bf1d",
+        "version" : "0.1.0"
       }
     }
   ],

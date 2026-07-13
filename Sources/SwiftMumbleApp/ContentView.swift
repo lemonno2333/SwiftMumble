@@ -18,6 +18,14 @@ struct ContentView: View {
         }
         .navigationSplitViewStyle(.balanced)
         .background(WindowBackdrop())
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if session.isReconnecting {
+                ReconnectingBanner()
+                    .environment(session)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .animation(.snappy, value: session.isReconnecting)
         .toolbar {
             if session.showsReturnToPreviousChannelControl {
                 ToolbarItem(placement: .navigation) {
@@ -109,6 +117,47 @@ struct ContentView: View {
     }
 }
 
+private struct ReconnectingBanner: View {
+    @Environment(SessionStore.self) private var session
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ProgressView()
+                .controlSize(.small)
+                .tint(.orange)
+
+            Image(systemName: "network.slash")
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(.orange)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(session.connectionLabel)
+                    .font(.headline)
+                if let server = session.selectedServer {
+                    Text("\(server.name)  \(server.host):\(server.port)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+
+            Spacer(minLength: 12)
+
+            Button(L10n.text("server.disconnect"), role: .cancel) {
+                session.disconnect()
+            }
+            .buttonStyle(.bordered)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(.orange.opacity(0.12))
+        .overlay(alignment: .bottom) {
+            Divider()
+        }
+        .accessibilityElement(children: .combine)
+    }
+}
+
 private struct CertificateTrustView: View {
     @Environment(SessionStore.self) private var session
     let certificate: PendingServerCertificate
@@ -179,6 +228,7 @@ private struct PushToTalkButton: View {
     }
 
     private var isEnabled: Bool {
+        guard !session.isReconnecting else { return false }
         if case .connected = session.connectionState {
             return !session.isMuted && session.transmissionMode == .pushToTalk
         }

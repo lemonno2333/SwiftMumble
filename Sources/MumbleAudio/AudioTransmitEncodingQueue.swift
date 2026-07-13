@@ -9,13 +9,18 @@ public enum AudioTransmitEncodingResult: Sendable {
 /// Keeps Opus work off UI and realtime capture threads while preserving the
 /// exact order of 10ms microphone frames and the final terminator.
 public final class AudioTransmitEncodingQueue: @unchecked Sendable {
-    public typealias EncodeCompletion = @MainActor @Sendable (AudioTransmitEncodingResult) -> Void
-    public typealias FinishCompletion = @MainActor @Sendable (UInt64?) -> Void
+    public typealias EncodeCompletion = @Sendable (AudioTransmitEncodingResult) -> Void
+    public typealias FinishCompletion = @Sendable (UInt64?) -> Void
 
     private let queue = DispatchQueue(
         label: "com.leo.SwiftMumble.audioTransmitEncoding",
         qos: .userInteractive
     )
+    private let pendingLock = NSLock()
+    private var pendingFrameJobs = 0
+    private let maximumPendingFrameJobs = 4
+    private var droppedFrameJobs: UInt64 = 0
+    private var encodedPackets: UInt64 = 0
     private var pipeline: AudioTransmitPipeline?
 
     public init() {}
@@ -26,7 +31,23 @@ public final class AudioTransmitEncodingQueue: @unchecked Sendable {
         framesPerPacket: Int,
         completion: @escaping EncodeCompletion
     ) {
+        let accepted = pendingLock.withLock {
+            guard pendingFrameJobs < maximumPendingFrameJobs else { return false }
+            pendingFrameJobs += 1
+            return true
+        }
+        guard accepted else {
+            let dropped = pendingLock.withLock {
+                droppedFrameJobs &+= 1
+                return droppedFrameJobs
+            }
+            if dropped == 1 || dropped.isMultiple(of: 50) {
+                AudioDiagnostics.shared.record("encode.drop count=\(dropped)")
+            }
+            return
+        }
         queue.async { [self] in
+            defer { pendingLock.withLock { pendingFrameJobs -= 1 } }
             do {
                 let activePipeline: AudioTransmitPipeline
                 if let pipeline {
@@ -40,6 +61,12 @@ public final class AudioTransmitEncodingQueue: @unchecked Sendable {
                     activePipeline = newPipeline
                 }
                 if let frame = try activePipeline.enqueue10msFrame(samples: samples) {
+                    encodedPackets &+= 1
+                    if encodedPackets == 1 || encodedPackets.isMultiple(of: 100) {
+                        AudioDiagnostics.shared.record(
+                            "encode.packet count=\(encodedPackets) pending=\(pendingFrameJobs)"
+                        )
+                    }
                     deliver(.frame(frame), to: completion)
                 } else {
                     deliver(.buffered, to: completion)
@@ -67,14 +94,18 @@ public final class AudioTransmitEncodingQueue: @unchecked Sendable {
     }
 
     private func deliver(_ result: AudioTransmitEncodingResult, to completion: @escaping EncodeCompletion) {
-        DispatchQueue.main.async {
-            MainActor.assumeIsolated { completion(result) }
-        }
+        completion(result)
     }
 
     private func deliver(_ frameNumber: UInt64?, to completion: @escaping FinishCompletion) {
-        DispatchQueue.main.async {
-            MainActor.assumeIsolated { completion(frameNumber) }
-        }
+        completion(frameNumber)
+    }
+}
+
+private extension NSLock {
+    func withLock<Result>(_ body: () -> Result) -> Result {
+        lock()
+        defer { unlock() }
+        return body()
     }
 }

@@ -19,6 +19,10 @@ let package = Package(
         .package(
             url: "https://github.com/apple/swift-protobuf.git",
             exact: "1.38.1"
+        ),
+        .package(
+            url: "https://github.com/ddddxxx/TouchBarHelper.git",
+            exact: "0.1.0"
         )
     ],
     targets: [
@@ -47,7 +51,10 @@ let package = Package(
         .target(name: "MumbleSystem"),
         .executableTarget(
             name: "SwiftMumbleApp",
-            dependencies: ["MumbleProtocol", "MumbleAudio", "MumbleSystem"],
+            dependencies: [
+                "MumbleProtocol", "MumbleAudio", "MumbleSystem",
+                .product(name: "TouchBarHelper", package: "TouchBarHelper")
+            ],
             resources: [.process("Resources")]
         ),
         .executableTarget(

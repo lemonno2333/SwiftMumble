@@ -1,4 +1,5 @@
 import AppKit
+import TouchBarHelper
 
 @MainActor
 final class SwiftMumbleAppDelegate: NSObject, NSApplicationDelegate {
@@ -6,6 +7,7 @@ final class SwiftMumbleAppDelegate: NSObject, NSApplicationDelegate {
         didSet { installTouchBar() }
     }
     private var touchBarController: SwiftMumbleTouchBarController?
+    private var systemTouchBarController: SwiftMumbleSystemTouchBarController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         installTouchBar()
@@ -15,9 +17,23 @@ final class SwiftMumbleAppDelegate: NSObject, NSApplicationDelegate {
             name: NSWindow.didBecomeKeyNotification,
             object: nil
         )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(touchBarControlStripPreferenceChanged),
+            name: .touchBarControlStripPreferenceChanged,
+            object: nil
+        )
     }
 
-    func applicationDidBecomeActive(_ notification: Notification) { attachTouchBarToAllWindows() }
+    func applicationDidBecomeActive(_ notification: Notification) {
+        systemTouchBarController?.removeFromControlStrip()
+        NSApplication.shared.touchBar = touchBarController?.makeTouchBar()
+        attachTouchBarToAllWindows()
+    }
+
+    func applicationDidResignActive(_ notification: Notification) {
+        updateControlStripPresentation()
+    }
 
     private func installTouchBar() {
         guard let session else { return }
@@ -25,12 +41,36 @@ final class SwiftMumbleAppDelegate: NSObject, NSApplicationDelegate {
         let controller = SwiftMumbleTouchBarController(session: session)
         touchBarController = controller
         NSApplication.shared.touchBar = controller.makeTouchBar()
+        systemTouchBarController?.removeFromControlStrip()
+        systemTouchBarController = SwiftMumbleSystemTouchBarController(
+            touchBar: controller.makeTouchBar(),
+            itemProvider: controller
+        )
+        systemTouchBarController?.removeFromControlStrip()
         attachTouchBarToAllWindows()
+        updateControlStripPresentation()
     }
 
     @objc private func windowDidBecomeKey(_ notification: Notification) {
         guard let window = notification.object as? NSWindow else { return }
         attachTouchBar(to: window)
+    }
+
+    @objc private func touchBarControlStripPreferenceChanged() {
+        updateControlStripPresentation()
+    }
+
+    private func updateControlStripPresentation() {
+        guard let session, session.touchBarControlStripEnabled, !NSApp.isActive else {
+            systemTouchBarController?.removeFromControlStrip()
+            if NSApp.isActive { NSApplication.shared.touchBar = touchBarController?.makeTouchBar() }
+            return
+        }
+        NSApplication.shared.touchBar = nil
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(100)) { [weak self] in
+            guard let self, self.session?.touchBarControlStripEnabled == true, !NSApp.isActive else { return }
+            self.systemTouchBarController?.showInControlStrip()
+        }
     }
 
     private func attachTouchBarToAllWindows() {
@@ -57,4 +97,59 @@ final class SwiftMumbleAppDelegate: NSObject, NSApplicationDelegate {
     @objc private func toggleMute() { session?.toggleMute() }
     @objc private func toggleDeafen() { session?.toggleDeafen() }
     @objc private func disconnect() { session?.disconnect() }
+}
+
+@MainActor
+private final class SwiftMumbleSystemTouchBarController: TouchBarSystemModalController, @unchecked Sendable {
+    private let hostedTouchBar: NSTouchBar
+    private let itemProvider: SwiftMumbleTouchBarController
+
+    init(touchBar: NSTouchBar, itemProvider: SwiftMumbleTouchBarController) {
+        hostedTouchBar = touchBar
+        self.itemProvider = itemProvider
+        super.init()
+    }
+
+    override func loadTouchBar() {
+        touchBar = hostedTouchBar
+    }
+
+    nonisolated override func touchBarDidLoad() {
+        MainActor.assumeIsolated {
+            let item = NSCustomTouchBarItem(identifier: .swiftMumbleSystemTray)
+            let title = "SwiftMumble"
+            let button = NSButton(
+                image: NSImage(
+                    systemSymbolName: "waveform.badge.mic",
+                    accessibilityDescription: title
+                ) ?? NSImage(),
+                target: self,
+                action: #selector(present)
+            )
+            button.toolTip = title
+            item.view = button
+            systemTrayItem = item
+        }
+    }
+
+    nonisolated func touchBar(
+        _ touchBar: NSTouchBar,
+        makeItemForIdentifier identifier: NSTouchBarItem.Identifier
+    ) -> NSTouchBarItem? {
+        MainActor.assumeIsolated {
+            itemProvider.touchBar(touchBar, makeItemForIdentifier: identifier)
+        }
+    }
+}
+
+extension Notification.Name {
+    static let touchBarControlStripPreferenceChanged = Notification.Name(
+        "SwiftMumble.touchBarControlStripPreferenceChanged"
+    )
+}
+
+private extension NSTouchBarItem.Identifier {
+    static let swiftMumbleSystemTray = NSTouchBarItem.Identifier(
+        "com.leo.SwiftMumble.touchBar.systemTray"
+    )
 }

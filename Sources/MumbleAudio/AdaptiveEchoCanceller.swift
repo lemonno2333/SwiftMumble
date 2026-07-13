@@ -6,7 +6,15 @@ public final class AdaptiveEchoCanceller: @unchecked Sendable {
     private var echoGain: Float = 0
 
     public init() {}
-    public func updateReference(_ samples: [Float]) { lock.lock(); reference = samples; lock.unlock() }
+    /// Playback is realtime-critical. A fresh echo reference is optional, so
+    /// never hold the mixer while microphone processing owns this state.
+    @discardableResult
+    public func tryUpdateReference(_ samples: [Float]) -> Bool {
+        guard lock.try() else { return false }
+        reference = samples
+        lock.unlock()
+        return true
+    }
     public func process(_ microphone: [Float]) -> [Float] {
         lock.lock(); defer { lock.unlock() }
         guard reference.count == microphone.count, !reference.isEmpty else { return microphone }

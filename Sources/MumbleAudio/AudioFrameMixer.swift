@@ -18,6 +18,7 @@ public final class AudioFrameMixer: @unchecked Sendable {
     private var isDucking = false
     private var droppedFrames = 0
     private var limiterGain: Float = 1
+    private var renderedFrameCount: UInt64 = 0
 
     public init(frameLength: Int = 480, maximumQueuedFramesPerSource: Int = 6) {
         precondition(frameLength > 0)
@@ -76,6 +77,7 @@ public final class AudioFrameMixer: @unchecked Sendable {
 
     public func setDuckingActive(_ active: Bool) {
         lock.withLock { isDucking = active }
+        AudioDiagnostics.shared.record("mixer.ducking active=\(active)")
     }
 
     public func push(source: UInt32, samples: [Float]) {
@@ -125,6 +127,13 @@ public final class AudioFrameMixer: @unchecked Sendable {
             }
             for index in mixed.indices {
                 mixed[index] = min(0.98, max(-0.98, mixed[index] * limiterGain))
+            }
+            renderedFrameCount &+= 1
+            if renderedFrameCount == 1 || renderedFrameCount.isMultiple(of: 100) {
+                let outputPeak = mixed.reduce(Float.zero) { max($0, abs($1)) }
+                AudioDiagnostics.shared.record(
+                    "mixer.output count=\(renderedFrameCount) peak=\(outputPeak) gain=\(outputGain) ducking=\(isDucking)"
+                )
             }
             return .samples(mixed)
         }

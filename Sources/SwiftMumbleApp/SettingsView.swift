@@ -1,3 +1,4 @@
+import AppKit
 import MumbleAudio
 import MumbleProtocol
 import MumbleSystem
@@ -488,6 +489,21 @@ struct SettingsView: View {
 
     private var interfaceSettings: some View {
         Form {
+            Section(L10n.text("settings.touchBar")) {
+                Toggle(
+                    L10n.text("settings.touchBar.controlStrip"),
+                    isOn: Binding(
+                        get: { session.touchBarControlStripEnabled },
+                        set: { session.setTouchBarControlStripEnabled($0) }
+                    )
+                )
+                Text(L10n.text("settings.touchBar.controlStrip.help"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button(L10n.text("settings.touchBar.customize")) {
+                    NSApplication.shared.toggleTouchBarCustomizationPalette(nil)
+                }
+            }
             Toggle(
                 L10n.text("settings.notifications"),
                 isOn: Binding(

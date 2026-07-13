@@ -666,6 +666,7 @@ private struct PrivateMessageComposer: View {
     let user: MumbleUser
     @State private var draft = ""
     @State private var editorHeight: CGFloat = 68
+    @State private var isComposing = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -674,13 +675,18 @@ private struct PrivateMessageComposer: View {
                 .foregroundStyle(.purple)
 
             ZStack(alignment: .topLeading) {
-                if draft.isEmpty {
+                if draft.isEmpty && !isComposing {
                     Text(L10n.text("chat.placeholder"))
                         .foregroundStyle(.tertiary)
                         .padding(.top, 2)
                         .allowsHitTesting(false)
                 }
-                NativeTextEditor(text: $draft, contentHeight: $editorHeight, maximumHeight: 132)
+                NativeTextEditor(
+                    text: $draft,
+                    contentHeight: $editorHeight,
+                    maximumHeight: 132,
+                    onCompositionChange: { isComposing = $0 }
+                )
             }
                 .frame(height: max(68, editorHeight))
                 .padding(10)

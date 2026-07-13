@@ -1,7 +1,5 @@
-import AppKit
 import Foundation
 
-@MainActor
 final class AudioCueService {
     enum Cue {
         case transmitStart
@@ -11,9 +9,7 @@ final class AudioCueService {
         case userJoined, userLeft, connected, disconnected
     }
 
-    private var activeSounds: [NSSound] = []
-
-    func play(_ cue: Cue) {
+    func samples(for cue: Cue) -> [Float] {
         let frequencies: [Double]
         switch cue {
         case .transmitStart: frequencies = [660, 880]
@@ -25,47 +21,21 @@ final class AudioCueService {
         case .connected: frequencies = [440, 660, 880]
         case .disconnected: frequencies = [660, 440, 260]
         }
-        guard let sound = NSSound(data: Self.waveData(frequencies: frequencies)) else { return }
-        activeSounds.removeAll { !$0.isPlaying }
-        activeSounds.append(sound)
-        sound.play()
+        return Self.samples(frequencies: frequencies)
     }
 
-    private static func waveData(frequencies: [Double]) -> Data {
-        let sampleRate = 22_050
+    private static func samples(frequencies: [Double]) -> [Float] {
+        let sampleRate = 48_000
         let segmentSamples = Int(Double(sampleRate) * 0.07)
-        var pcm = [Int16]()
+        var pcm: [Float] = []
+        pcm.reserveCapacity(segmentSamples * frequencies.count)
         for frequency in frequencies {
             for index in 0 ..< segmentSamples {
                 let envelope = sin(Double.pi * Double(index) / Double(segmentSamples))
                 let sample = sin(2 * Double.pi * frequency * Double(index) / Double(sampleRate))
-                pcm.append(Int16(sample * envelope * 5_000))
+                pcm.append(Float(sample * envelope * 0.15))
             }
         }
-        var data = Data()
-        let byteCount = UInt32(pcm.count * MemoryLayout<Int16>.size)
-        data.appendASCII("RIFF")
-        data.appendLittleEndian(UInt32(36) + byteCount)
-        data.appendASCII("WAVEfmt ")
-        data.appendLittleEndian(UInt32(16))
-        data.appendLittleEndian(UInt16(1))
-        data.appendLittleEndian(UInt16(1))
-        data.appendLittleEndian(UInt32(sampleRate))
-        data.appendLittleEndian(UInt32(sampleRate * 2))
-        data.appendLittleEndian(UInt16(2))
-        data.appendLittleEndian(UInt16(16))
-        data.appendASCII("data")
-        data.appendLittleEndian(byteCount)
-        pcm.withUnsafeBytes { data.append(contentsOf: $0) }
-        return data
-    }
-}
-
-private extension Data {
-    mutating func appendASCII(_ value: String) { append(contentsOf: value.utf8) }
-
-    mutating func appendLittleEndian<T: FixedWidthInteger>(_ value: T) {
-        var value = value.littleEndian
-        Swift.withUnsafeBytes(of: &value) { append(contentsOf: $0) }
+        return pcm
     }
 }

@@ -7,6 +7,7 @@ import Observation
 import OSLog
 
 private let identityLogger = Logger(subsystem: "com.leo.SwiftMumble", category: "ClientIdentity")
+private let audioDiagnosticsStarted: Void = { AudioDiagnostics.shared.beginSession() }()
 
 struct ChatEntry: Identifiable, Equatable {
     let id = UUID()
@@ -170,6 +171,7 @@ final class SessionStore {
     var userStatistics: MumbleUserStatistics?
     var isLoadingUserStatistics = false
     var notificationsEnabled = false
+    var touchBarControlStripEnabled = false
     var masterOutputVolume: Float = 1
     var duckingEnabled = false
     var duckingVolume: Float = 0.35
@@ -206,16 +208,14 @@ final class SessionStore {
     @ObservationIgnored private var talkingPruneTask: Task<Void, Never>?
     @ObservationIgnored private var channelHistory = MumbleChannelHistory()
     @ObservationIgnored private let audioCapture = AudioCaptureService()
-    @ObservationIgnored private let noiseSuppressor = RNNoiseSuppressor()
-    @ObservationIgnored private let automaticGainControl = AutomaticGainControl()
-    @ObservationIgnored private let echoCanceller = AdaptiveEchoCanceller()
+    @ObservationIgnored private let inputProcessor = AudioInputProcessor()
+    @ObservationIgnored private let realtimeVoiceActivity = RealtimeVoiceActivityProcessor()
     @ObservationIgnored private let messageSpeechService = MessageSpeechService()
     @ObservationIgnored private let audioCueService = AudioCueService()
     @ObservationIgnored private let transmitEncodingQueue = AudioTransmitEncodingQueue()
-    @ObservationIgnored private var audioReceivePipelines: [UInt32: AudioReceivePipeline] = [:]
-    @ObservationIgnored private var audioDrainTasks: [UInt32: Task<Void, Never>] = [:]
+    @ObservationIgnored private var audioPlayback: AudioPlaybackService?
     @ObservationIgnored private let audioMixer = AudioFrameMixer()
-    @ObservationIgnored private let audioMixClock = AudioMixClock()
+    @ObservationIgnored private lazy var audioIngress = AudioReceiveIngress(mixer: audioMixer)
     @ObservationIgnored private var serverProtocolVersion = MumbleProtocolVersion(major: 1, minor: 4, patch: 0)
     @ObservationIgnored private var pendingConnectionPassword = ""
     @ObservationIgnored private var cryptState: MumbleCryptState?
@@ -259,10 +259,12 @@ final class SessionStore {
     @ObservationIgnored private var automaticCaptureGeneration = 0
     @ObservationIgnored private var isAudioSettingsVisible = false
     @ObservationIgnored private var microphoneLevelFrameCounter = 0
+    @ObservationIgnored private var lastDiagnosticSendDecision = false
     @ObservationIgnored private var unpublishedAudioPacketsSent: UInt64 = 0
     @ObservationIgnored private var audioPacketCountPublishTask: Task<Void, Never>?
     @ObservationIgnored private var pendingChannelPath: [String] = []
     @ObservationIgnored private var requestedChannelDescriptions: Set<UInt32> = []
+    @ObservationIgnored private var droppedSelfAudioPackets: UInt64 = 0
     @ObservationIgnored private var lanDiscovery: LANMumbleDiscovery?
     @ObservationIgnored private var globalShortcutConfiguration: ServerShortcutConfiguration?
 
@@ -271,6 +273,7 @@ final class SessionStore {
         channels: [MumbleChannel] = [],
         connectionState: ConnectionState = .disconnected
     ) {
+        _ = audioDiagnosticsStarted
         let controlConnection = MumbleControlConnection()
         self.controlConnection = controlConnection
         voiceRouter = MumbleVoiceRouter(controlConnection: controlConnection)
@@ -334,6 +337,7 @@ final class SessionStore {
         autoReconnectEnabled = defaults.object(forKey: "autoReconnectEnabled") as? Bool ?? true
         unmuteOnUndeafen = defaults.object(forKey: "unmuteOnUndeafen") as? Bool ?? true
         notificationsEnabled = defaults.bool(forKey: "notificationsEnabled")
+        touchBarControlStripEnabled = defaults.bool(forKey: "touchBarControlStripEnabled")
         masterOutputVolume = (defaults.object(forKey: "masterOutputVolume") as? NSNumber)?.floatValue ?? 1
         duckingEnabled = defaults.bool(forKey: "duckingEnabled")
         duckingVolume = (defaults.object(forKey: "duckingVolume") as? NSNumber)?.floatValue ?? 0.35
@@ -370,6 +374,12 @@ final class SessionStore {
         loadChannelPreferences()
         audioMixer.setMasterGain(masterOutputVolume)
         audioMixer.setDuckingGain(duckingVolume)
+        inputProcessor.configure(
+            echo: echoCancellationEnabled,
+            noiseSuppression: noiseSuppressionEnabled,
+            automaticGain: automaticGainControlEnabled
+        )
+        configureRealtimeVoiceActivity()
         if isGlobalPushToTalkEnabled { configureGlobalPushToTalk(enabled: true) }
         if isPushToMuteEnabled { configurePushToMute(enabled: true) }
         if areGlobalAudioShortcutsEnabled { configureGlobalAudioShortcuts(enabled: true) }
@@ -575,20 +585,17 @@ final class SessionStore {
     }
 
     var transportLabel: String {
+        if isReconnecting { return connectionLabel }
         guard case .connected = connectionState else { return connectionLabel }
         return isUsingUDP ? L10n.text("connection.udp") : L10n.text("connection.tcp")
     }
 
-    var activeReceivePipelineCount: Int { audioReceivePipelines.count }
+    var activeReceivePipelineCount: Int { audioIngress.pipelineCount }
     var averageReceiveJitterMilliseconds: Double {
-        guard !audioReceivePipelines.isEmpty else { return 0 }
-        return audioReceivePipelines.values.map(\.estimatedJitterMilliseconds).reduce(0, +)
-            / Double(audioReceivePipelines.count)
+        audioIngress.averageJitterMilliseconds
     }
     var averageReceiveBufferMilliseconds: Int {
-        guard !audioReceivePipelines.isEmpty else { return jitterBufferDelayFrames * 10 }
-        return audioReceivePipelines.values.map(\.targetDelayFrames).reduce(0, +) * 10
-            / audioReceivePipelines.count
+        audioIngress.averageBufferMilliseconds ?? jitterBufferDelayFrames * 10
     }
 
     func setNotificationsEnabled(_ enabled: Bool) {
@@ -605,6 +612,12 @@ final class SessionStore {
                 serverManagementError = L10n.text("notifications.permissionDenied")
             }
         }
+    }
+
+    func setTouchBarControlStripEnabled(_ enabled: Bool) {
+        touchBarControlStripEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "touchBarControlStripEnabled")
+        NotificationCenter.default.post(name: .touchBarControlStripPreferenceChanged, object: nil)
     }
 
     func setMasterOutputVolume(_ volume: Float) {
@@ -627,7 +640,7 @@ final class SessionStore {
 
     func setNoiseSuppressionEnabled(_ enabled: Bool) {
         noiseSuppressionEnabled = enabled
-        noiseSuppressor.reset()
+        updateInputProcessorConfiguration()
         UserDefaults.standard.set(enabled, forKey: "noiseSuppressionEnabled")
     }
 
@@ -679,12 +692,22 @@ final class SessionStore {
 
     func setAutomaticGainControlEnabled(_ enabled: Bool) {
         automaticGainControlEnabled = enabled
-        automaticGainControl.reset()
+        updateInputProcessorConfiguration()
         UserDefaults.standard.set(enabled, forKey: "automaticGainControlEnabled")
     }
     func setEchoCancellationEnabled(_ enabled: Bool) {
-        echoCancellationEnabled = enabled; echoCanceller.reset()
+        echoCancellationEnabled = enabled
+        inputProcessor.resetEchoCancellation()
+        updateInputProcessorConfiguration()
         UserDefaults.standard.set(enabled, forKey: "echoCancellationEnabled")
+    }
+
+    private func updateInputProcessorConfiguration() {
+        inputProcessor.configure(
+            echo: echoCancellationEnabled,
+            noiseSuppression: noiseSuppressionEnabled,
+            automaticGain: automaticGainControlEnabled
+        )
     }
 
     func setAudioCuesEnabled(_ enabled: Bool) {
@@ -760,11 +783,43 @@ final class SessionStore {
     private func setTransmitting(_ transmitting: Bool) {
         let changed = transmitting != isTransmitting
         isTransmitting = transmitting
-        audioMixer.setDuckingActive(duckingEnabled && transmitting)
-        if changed, audioCuesEnabled {
-            audioCueService.play(transmitting ? .transmitStart : .transmitStop)
+        if changed {
+            AudioDiagnostics.shared.record(
+                "transmit.state active=\(transmitting) duckingEnabled=\(duckingEnabled) duckingVolume=\(duckingVolume)"
+            )
         }
-        if changed { rebuildChannels() }
+        audioMixer.setDuckingActive(duckingEnabled && transmitting)
+        // Starting a second output operation while AUHAL is capturing can
+        // stall the device on macOS. Keep transmit-state cues out of this
+        // realtime transition; connection and mute cues remain available.
+        if changed {
+            Task { @MainActor [weak self] in
+                await Task.yield()
+                self?.rebuildChannels()
+            }
+        }
+    }
+
+    private func ensureAudioPlayback() throws -> AudioPlaybackService {
+        if let audioPlayback {
+            try audioPlayback.start()
+            return audioPlayback
+        }
+        let playback = try AudioPlaybackService()
+        try playback.selectDevice(selectedOutputDeviceID)
+        playback.setMuted(isDeafened)
+        try playback.start()
+        audioPlayback = playback
+        return playback
+    }
+
+    private func playAudioCue(_ cue: AudioCueService.Cue) {
+        do {
+            let playback = try ensureAudioPlayback()
+            playback.enqueueOverlay(samples: audioCueService.samples(for: cue))
+        } catch {
+            audioErrorMessage = error.localizedDescription
+        }
     }
 
     func connect(password: String? = nil, isReconnect: Bool = false) {
@@ -797,6 +852,7 @@ final class SessionStore {
         if !isReconnect { chatEntries = [] }
         serverRecognizedIdentityHash = nil
         connectionState = .connecting
+        AudioDiagnostics.shared.record("connection.begin host=\(server.host) mode=\(transmissionMode.rawValue)")
 
         let resolvedPassword = password
             ?? (try? KeychainPasswordStore.load(account: server.id.uuidString))
@@ -828,9 +884,11 @@ final class SessionStore {
 
                 switch event {
                 case .preparing:
+                    AudioDiagnostics.shared.record("connection.preparing")
                     connectionState = .connecting
 
                 case .ready:
+                    AudioDiagnostics.shared.record("connection.ready")
                     connectionState = .authenticating
                     do {
                         for frame in try MumbleHandshake.frames(credentials: credentials) {
@@ -867,6 +925,7 @@ final class SessionStore {
                     scheduleReconnectIfNeeded()
 
                 case .disconnected:
+                    AudioDiagnostics.shared.record("connection.disconnected")
                     pingTask?.cancel()
                     if case .failed = connectionState {
                         scheduleReconnectIfNeeded()
@@ -879,9 +938,10 @@ final class SessionStore {
                             body: server.name
                         )
                     }
-                    if audioCuesEnabled, didSynchronize { audioCueService.play(.disconnected) }
+                    if audioCuesEnabled, didSynchronize { playAudioCue(.disconnected) }
                     scheduleReconnectIfNeeded()
                 }
+                await Task.yield()
             }
         }
     }
@@ -1182,6 +1242,8 @@ final class SessionStore {
     }
 
     func disconnect() {
+        AudioDiagnostics.shared.record("connection.disconnect requested")
+        realtimeVoiceActivity.setTransmissionAllowed(false)
         cancelAudioLoopbackTest()
         // User-initiated: stop any pending reconnect and don't schedule new ones.
         suppressReconnect = true
@@ -1192,13 +1254,12 @@ final class SessionStore {
         reconnectPolicy.reset()
         stopAutomaticAudioCapture()
         endTransmission()
+        audioCapture.shutdown()
         stopUDP()
-        audioMixClock.stop()
-        audioCapture.stopPlayback()
-        audioDrainTasks.values.forEach { $0.cancel() }
-        audioDrainTasks.removeAll()
-        audioReceivePipelines.removeAll()
-        audioMixer.removeAllSources()
+        audioPlayback?.setFillHandler(nil)
+        audioPlayback?.stop()
+        audioPlayback = nil
+        audioIngress.removeAll()
         userVolumeGains.removeAll()
         locallyMutedSessions.removeAll()
         talkingPruneTask?.cancel()
@@ -1273,22 +1334,37 @@ final class SessionStore {
 
             do {
                 audioCapture.selectDevice(selectedInputDeviceID)
-                let frameStream = AsyncStream.makeStream(of: [Float].self)
+                let frameStream = AsyncStream.makeStream(
+                    of: [Float].self,
+                    bufferingPolicy: .bufferingNewest(3)
+                )
                 manualFrameContinuation = frameStream.continuation
                 let frameContinuation = frameStream.continuation
-                manualFrameConsumerTask = Task { [weak self] in
+                let processor = inputProcessor
+                let enqueueVoice = makeRealtimeVoiceEnqueuer()
+                // DSP and Opus already run on dedicated high-QoS dispatch queues.
+                // Keeping this forwarding loop at `.high` can starve the
+                // MainActor task that consumes incoming server events while PTT
+                // is held, delaying both received audio and user-state updates.
+                manualFrameConsumerTask = Task.detached(priority: .utility) {
+                    var frameCount: UInt64 = 0
                     for await samples in frameStream.stream {
-                        guard let self,
-                              generation == self.manualCaptureGeneration,
-                              self.isTransmitting,
-                              self.transmissionMode == .pushToTalk,
-                              case .connected = self.connectionState else { return }
-                        self.sendCapturedFrame(self.processedInput(samples), alreadyProcessed: true)
+                        if Task.isCancelled { return }
+                        frameCount &+= 1
+                        let processed = await processor.processRealtime(samples)
+                        enqueueVoice(processed)
+                        if frameCount == 1 || frameCount.isMultiple(of: 100) {
+                            AudioDiagnostics.shared.record(
+                                "ptt.frame count=\(frameCount)"
+                            )
+                        }
+                        await Task.yield()
                     }
                 }
                 try audioCapture.start { samples in
                     frameContinuation.yield(samples)
                 }
+                audioPlayback?.undoSystemVoiceDucking()
             } catch {
                 manualFrameContinuation?.finish()
                 manualFrameContinuation = nil
@@ -1362,7 +1438,7 @@ final class SessionStore {
                     isTerminator: true,
                     protocolVersion: protocolVersion
                 ) {
-                    try? await voiceRouter.send(packet)
+                    await voiceRouter.enqueue(packet)
                 }
             }
         }
@@ -1370,18 +1446,21 @@ final class SessionStore {
     }
 
     private func sendCapturedFrame(_ samples: [Float], alreadyProcessed: Bool = false) {
-        let samples = alreadyProcessed ? samples : processedInput(samples)
+        let samples = alreadyProcessed ? samples : inputProcessor.process(samples)
         if !isTransmitting { setTransmitting(true) }
         let configuration = opusEncoderConfiguration
         let framesPerPacket = opusFramesPerPacket
         let target = activeVoiceTargetID
         let protocolVersion = serverProtocolVersion
         let voiceRouter = voiceRouter
+        let reportFailure: @MainActor @Sendable (String) -> Void = { [weak self] message in
+            self?.handleTransmitFailure(message)
+        }
         transmitEncodingQueue.enqueue(
             samples: samples,
             configuration: configuration,
             framesPerPacket: framesPerPacket
-        ) { [weak self] result in
+        ) { result in
             switch result {
             case .buffered:
                 break
@@ -1394,18 +1473,58 @@ final class SessionStore {
                         protocolVersion: protocolVersion
                     )
                     Task {
-                        do {
-                            try await voiceRouter.send(packet)
-                            self?.recordAudioPacketSent()
-                        } catch {
-                            self?.handleTransmitFailure(error.localizedDescription)
-                        }
+                        await voiceRouter.enqueue(packet)
                     }
                 } catch {
-                    self?.handleTransmitFailure(error.localizedDescription)
+                    Task { await reportFailure(error.localizedDescription) }
                 }
             case .failed(let error):
-                self?.handleTransmitFailure(String(describing: error))
+                Task { await reportFailure(String(describing: error)) }
+            }
+        }
+    }
+
+    private func makeRealtimeVoiceEnqueuer() -> @Sendable ([Float]) -> Void {
+        let configuration = opusEncoderConfiguration
+        let framesPerPacket = opusFramesPerPacket
+        let target = activeVoiceTargetID
+        let protocolVersion = serverProtocolVersion
+        let voiceRouter = voiceRouter
+        let encodingQueue = transmitEncodingQueue
+        return { samples in
+            encodingQueue.enqueue(
+                samples: samples,
+                configuration: configuration,
+                framesPerPacket: framesPerPacket
+            ) { result in
+                guard case .frame(let encoded) = result,
+                      let packet = try? MumbleVoicePacket.clientAudioPacket(
+                        opusData: encoded.opusData,
+                        frameNumber: encoded.frameNumber,
+                        target: target,
+                        protocolVersion: protocolVersion
+                      ) else { return }
+                Task { await voiceRouter.enqueue(packet) }
+            }
+        }
+    }
+
+    private func makeRealtimeVoiceFinisher() -> @Sendable () -> Void {
+        let encodingQueue = transmitEncodingQueue
+        let target = activeVoiceTargetID
+        let protocolVersion = serverProtocolVersion
+        let voiceRouter = voiceRouter
+        return {
+            encodingQueue.finish { frameNumber in
+                guard let frameNumber,
+                      let packet = try? MumbleVoicePacket.clientAudioPacket(
+                        opusData: Data(),
+                        frameNumber: frameNumber,
+                        target: target,
+                        isTerminator: true,
+                        protocolVersion: protocolVersion
+                      ) else { return }
+                Task { await voiceRouter.enqueue(packet) }
             }
         }
     }
@@ -1434,24 +1553,33 @@ final class SessionStore {
         unpublishedAudioPacketsSent = 0
     }
 
-    private func processedInput(_ samples: [Float]) -> [Float] {
-        let echoReduced = echoCancellationEnabled ? echoCanceller.process(samples) : samples
-        let denoised = noiseSuppressionEnabled ? noiseSuppressor.process(echoReduced) : echoReduced
-        return automaticGainControlEnabled ? automaticGainControl.process(denoised) : denoised
-    }
-
     func setTransmissionMode(_ mode: AudioTransmissionMode) {
         guard transmissionMode != mode else { return }
         stopAutomaticAudioCapture()
         endTransmission()
         transmissionMode = mode
+        configureRealtimeVoiceActivity()
         UserDefaults.standard.set(mode.rawValue, forKey: "audioTransmissionMode")
         refreshAutomaticAudioCapture()
     }
 
+    func cycleTransmissionMode() {
+        let modes = AudioTransmissionMode.allCases
+        let index = modes.firstIndex(of: transmissionMode) ?? 0
+        setTransmissionMode(modes[(index + 1) % modes.count])
+    }
+
     func setVoiceActivityThresholdDB(_ threshold: Double) {
         voiceActivityThresholdDB = min(-5, max(-70, threshold))
+        configureRealtimeVoiceActivity()
         UserDefaults.standard.set(voiceActivityThresholdDB, forKey: "voiceActivityThresholdDB")
+    }
+
+    private func configureRealtimeVoiceActivity() {
+        realtimeVoiceActivity.configure(
+            mode: transmissionMode == .continuous ? .continuous : .voiceActivity,
+            thresholdDB: voiceActivityThresholdDB
+        )
     }
 
     func setAudioSettingsVisible(_ visible: Bool) {
@@ -1471,7 +1599,7 @@ final class SessionStore {
     private var shouldAutomaticallyMonitorMicrophone: Bool {
         let connected: Bool
         if case .connected = connectionState { connected = true } else { connected = false }
-        return transmissionMode != .pushToTalk && (connected || isAudioSettingsVisible)
+        return !isMuted && transmissionMode != .pushToTalk && (connected || isAudioSettingsVisible)
     }
 
     private func startAutomaticAudioCapture() {
@@ -1496,25 +1624,73 @@ final class SessionStore {
             }
             do {
                 voiceActivityGate.reset()
+                realtimeVoiceActivity.reset()
+                configureRealtimeVoiceActivity()
                 audioCapture.selectDevice(selectedInputDeviceID)
-                let frameStream = AsyncStream.makeStream(of: [Float].self)
+                let frameStream = AsyncStream.makeStream(
+                    of: [Float].self,
+                    bufferingPolicy: .bufferingNewest(3)
+                )
                 automaticFrameContinuation = frameStream.continuation
                 let frameContinuation = frameStream.continuation
-                automaticFrameConsumerTask = Task { [weak self] in
+                let processor = inputProcessor
+                let voiceActivity = realtimeVoiceActivity
+                let enqueueVoice = makeRealtimeVoiceEnqueuer()
+                let finishVoice = makeRealtimeVoiceFinisher()
+                let updateUI: @MainActor @Sendable (RealtimeVoiceDecision, UInt64) -> Void = { [weak self] decision, frameCount in
+                    guard let self,
+                          generation == self.automaticCaptureGeneration,
+                          self.shouldAutomaticallyMonitorMicrophone else { return }
+                    self.microphoneLevelFrameCounter = Int(frameCount)
+                    self.microphoneLevelDB = decision.smoothedLevelDB
+                    self.isVoiceActivityDetected = self.transmissionMode == .voiceActivity && decision.shouldSend
+                    if let floor = decision.noiseFloorDB { self.noiseFloorDB = floor }
+                }
+                automaticFrameConsumerTask = Task.detached(priority: .high) {
+                    var frameCount: UInt64 = 0
                     for await samples in frameStream.stream {
-                        guard let self,
-                              generation == self.automaticCaptureGeneration,
-                              self.shouldAutomaticallyMonitorMicrophone else { return }
-                        let processed = self.processedInput(samples)
-                        self.handleAutomaticCapturedFrame(
-                            processed,
-                            levelDB: AudioLevelMeter.decibels(samples: processed)
+                        if Task.isCancelled { return }
+                        frameCount &+= 1
+                        let decision = voiceActivity.process(
+                            levelDB: AudioLevelMeter.decibels(samples: samples)
                         )
+                        if decision.didChange {
+                            if !decision.shouldSend { finishVoice() }
+                            DispatchQueue.main.async { [weak self] in
+                                MainActor.assumeIsolated {
+                                    self?.setTransmitting(decision.shouldSend)
+                                }
+                            }
+                        }
+                        if frameCount == 1 || frameCount.isMultiple(of: 10) || decision.didChange {
+                            let displayedFrameCount = frameCount
+                            DispatchQueue.main.async {
+                                MainActor.assumeIsolated {
+                                    updateUI(decision, displayedFrameCount)
+                                    if displayedFrameCount == 1 || displayedFrameCount.isMultiple(of: 100) {
+                                        AudioDiagnostics.shared.record(
+                                            "ui.meter count=\(displayedFrameCount) db=\(decision.smoothedLevelDB)"
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        if decision.shouldSend {
+                            if frameCount == 1 || frameCount.isMultiple(of: 100) {
+                                AudioDiagnostics.shared.record("consumer.process.begin count=\(frameCount)")
+                            }
+                            let processed = await processor.processRealtime(samples)
+                            if frameCount == 1 || frameCount.isMultiple(of: 100) {
+                                AudioDiagnostics.shared.record("consumer.process.end count=\(frameCount)")
+                            }
+                            enqueueVoice(processed)
+                        }
                     }
                 }
                 try audioCapture.start { samples in
                     frameContinuation.yield(samples)
                 }
+                audioPlayback?.undoSystemVoiceDucking()
                 isMicrophoneMonitoring = true
             } catch {
                 automaticFrameContinuation?.finish()
@@ -1538,18 +1714,24 @@ final class SessionStore {
         isMicrophoneMonitoring = false
         microphoneLevelDB = -80
         microphoneLevelFrameCounter = 0
+        lastDiagnosticSendDecision = false
         isVoiceActivityDetected = false
         voiceActivityGate.reset()
         levelSmoother.reset()
         finishTransmitPipeline()
     }
 
-    private func handleAutomaticCapturedFrame(_ samples: [Float], levelDB: Double) {
-        guard transmissionMode != .pushToTalk else { return }
+    private func evaluateAutomaticCapturedLevel(_ levelDB: Double) -> Bool {
+        guard transmissionMode != .pushToTalk else { return false }
         let smoothedLevel = levelSmoother.process(levelDB: levelDB)
         microphoneLevelFrameCounter += 1
         if microphoneLevelFrameCounter.isMultiple(of: 3) {
             microphoneLevelDB = smoothedLevel
+        }
+        if microphoneLevelFrameCounter == 1 || microphoneLevelFrameCounter.isMultiple(of: 100) {
+            AudioDiagnostics.shared.record(
+                "consumer.level frames=\(microphoneLevelFrameCounter) db=\(smoothedLevel) connected=\(connectionState)"
+            )
         }
         let shouldSend: Bool
         switch transmissionMode {
@@ -1564,6 +1746,12 @@ final class SessionStore {
             shouldSend = true
         }
         isVoiceActivityDetected = transmissionMode == .voiceActivity && shouldSend
+        if shouldSend != lastDiagnosticSendDecision {
+            lastDiagnosticSendDecision = shouldSend
+            AudioDiagnostics.shared.record(
+                "vad.transition sending=\(shouldSend) db=\(smoothedLevel) threshold=\(voiceActivityThresholdDB)"
+            )
+        }
         // Learn the ambient noise floor only from frames the gate treats as
         // silence, so speech does not pull the estimate up.
         if transmissionMode == .voiceActivity, !shouldSend {
@@ -1572,13 +1760,10 @@ final class SessionStore {
 
         guard case .connected = connectionState, !isMuted else {
             finishTransmitPipeline()
-            return
+            return false
         }
-        if shouldSend {
-            sendCapturedFrame(samples, alreadyProcessed: true)
-        } else {
-            finishTransmitPipeline()
-        }
+        if !shouldSend { finishTransmitPipeline() }
+        return shouldSend
     }
 
     func toggleMute() {
@@ -1589,9 +1774,16 @@ final class SessionStore {
         guard muted != isMuted else { return }
         if muted { endTransmission() }
         isMuted = muted
-        if audioCuesEnabled { audioCueService.play(muted ? .muted : .unmuted) }
+        let connected: Bool
+        if case .connected = connectionState { connected = true } else { connected = false }
+        realtimeVoiceActivity.setTransmissionAllowed(connected && !muted)
+        if audioCuesEnabled { playAudioCue(muted ? .muted : .unmuted) }
         // Unmuting while deafened makes no sense; drop deafen too.
-        if !muted, isDeafened { isDeafened = false }
+        if !muted, isDeafened {
+            isDeafened = false
+            audioPlayback?.setMuted(false)
+        }
+        refreshAutomaticAudioCapture()
         syncSelfAudioState()
     }
 
@@ -1602,7 +1794,7 @@ final class SessionStore {
     func setDeafened(_ deafened: Bool) {
         guard deafened != isDeafened else { return }
         isDeafened = deafened
-        audioCapture.setPlaybackMuted(deafened)
+        audioPlayback?.setMuted(deafened)
         if deafened {
             // Deafen implies mute, matching official behavior.
             if !isMuted { endTransmission() }
@@ -1610,6 +1802,7 @@ final class SessionStore {
         } else if unmuteOnUndeafen {
             isMuted = false
         }
+        refreshAutomaticAudioCapture()
         syncSelfAudioState()
     }
 
@@ -1620,10 +1813,11 @@ final class SessionStore {
         if user.isSelfMuted != isMuted {
             if user.isSelfMuted { endTransmission() }
             isMuted = user.isSelfMuted
+            refreshAutomaticAudioCapture()
         }
         if user.isSelfDeafened != isDeafened {
             isDeafened = user.isSelfDeafened
-            audioCapture.setPlaybackMuted(isDeafened)
+            audioPlayback?.setMuted(isDeafened)
         }
     }
 
@@ -1977,10 +2171,7 @@ final class SessionStore {
         case .toggleDeafen: toggleDeafen()
         case .volumeDown: setMasterOutputVolume(masterOutputVolume - 0.05)
         case .volumeUp: setMasterOutputVolume(masterOutputVolume + 0.05)
-        case .cycleTransmissionMode:
-            let modes = AudioTransmissionMode.allCases
-            let index = modes.firstIndex(of: transmissionMode) ?? 0
-            setTransmissionMode(modes[(index + 1) % modes.count])
+        case .cycleTransmissionMode: cycleTransmissionMode()
         }
     }
 
@@ -2572,6 +2763,12 @@ final class SessionStore {
 
     private func handle(_ frame: MumbleFrame) {
         do {
+            if frame.type == .userState
+                || (frame.type == .udpTunnel && audioPacketsReceived.isMultiple(of: 100)) {
+                AudioDiagnostics.shared.record(
+                    "control.receive type=\(frame.type) transmitting=\(isTransmitting)"
+                )
+            }
             if frame.type == .userState,
                case .connected(let ownSession) = connectionState {
                 let state = try frame.decode(as: MumbleProto_UserState.self)
@@ -2731,6 +2928,7 @@ final class SessionStore {
             guard change != nil else { return }
 
             let snapshot = protocolState.snapshot()
+            removeAudioPipelinesForDepartedUsers(from: channelSnapshot, to: snapshot.channels)
             if (notificationsEnabled || audioCuesEnabled), didSynchronize {
                 notifyUserChanges(from: channelSnapshot, to: snapshot.channels, ownSession: snapshot.session)
             }
@@ -2754,7 +2952,11 @@ final class SessionStore {
                 selectedChannelID = snapshot.channels.first?.id
             }
             if case .synchronized(let session) = change {
+                AudioDiagnostics.shared.record("connection.synchronized session=\(session)")
                 connectionState = .connected(session: session)
+                audioIngress.configure(ownSession: session, targetDelayFrames: jitterBufferDelayFrames)
+                startAudioMixLoop()
+                realtimeVoiceActivity.setTransmissionAllowed(!isMuted)
                 let wasReconnecting = isReconnecting
                 didSynchronize = true
                 reconnectPolicy.reset()
@@ -2766,7 +2968,7 @@ final class SessionStore {
                         body: selectedServer?.name ?? "Mumble"
                     )
                 }
-                if audioCuesEnabled { audioCueService.play(.connected) }
+                if audioCuesEnabled { playAudioCue(.connected) }
                 reportSelfAudioState(session: session)
                 if wasReconnecting, let selectedChannelID {
                     Task {
@@ -2776,6 +2978,10 @@ final class SessionStore {
                     }
                 }
                 refreshAutomaticAudioCapture()
+                if transmissionMode == .pushToTalk, !isMuted {
+                    let capture = audioCapture
+                    Task.detached(priority: .utility) { try? capture.prepare() }
+                }
                 joinPendingChannelPath()
             }
         } catch {
@@ -2784,29 +2990,23 @@ final class SessionStore {
     }
 
     private func handleIncomingAudio(_ frame: MumbleFrame) throws {
-        let incoming = try MumbleVoicePacket.decodeTunneledAudio(frame)
-        audioPacketsReceived += 1
-        let pipeline: AudioReceivePipeline
-        if let existing = audioReceivePipelines[incoming.senderSession] {
-            pipeline = existing
-        } else {
-            pipeline = try AudioReceivePipeline(targetDelayFrames: jitterBufferDelayFrames)
-            audioReceivePipelines[incoming.senderSession] = pipeline
-            audioMixer.register(source: incoming.senderSession)
-            seedMixerSettings(session: incoming.senderSession)
-            startAudioDrain(session: incoming.senderSession, pipeline: pipeline)
+        let event = try audioIngress.receive(payload: frame.payload)
+        handleAudioIngressEvent(event)
+    }
+
+    private func handleAudioIngressEvent(_ event: AudioIngressEvent) {
+        if event.isSelfAudio {
+            droppedSelfAudioPackets &+= 1
+            if droppedSelfAudioPackets == 1 || droppedSelfAudioPackets.isMultiple(of: 100) {
+                AudioDiagnostics.shared.record(
+                    "receive.dropSelf count=\(droppedSelfAudioPackets) session=\(event.session)"
+                )
+            }
+            return
         }
-
-        pipeline.push(
-            frameNumber: incoming.frameNumber,
-            packet: BufferedAudioPacket(
-                opusData: incoming.opusData,
-                volume: incoming.volumeAdjustment,
-                isTerminator: incoming.isTerminator
-            )
-        )
-
-        updateTalking(session: incoming.senderSession, isTerminator: incoming.isTerminator)
+        audioPacketsReceived += 1
+        seedMixerSettings(session: event.session)
+        updateTalking(session: event.session, isTerminator: event.isTerminator)
     }
 
     private func updateTalking(session: UInt32, isTerminator: Bool) {
@@ -2864,64 +3064,45 @@ final class SessionStore {
         }
     }
 
-    private func startAudioDrain(session: UInt32, pipeline: AudioReceivePipeline) {
-        audioDrainTasks[session]?.cancel()
-        audioDrainTasks[session] = Task {
-            defer {
-                audioReceivePipelines.removeValue(forKey: session)
-                audioDrainTasks.removeValue(forKey: session)
-                audioMixer.unregister(source: session)
-                if audioReceivePipelines.isEmpty {
-                    audioMixClock.stop()
-                    audioCapture.stopPlayback()
-                }
-                if talkingTracker.clear(session: session) { rebuildChannels() }
-            }
-            var waitingReads = 0
-            while !Task.isCancelled {
-                do {
-                    switch try pipeline.read() {
-                    case .waiting:
-                        waitingReads += 1
-                        if waitingReads > 100 { return }
-                        try await Task.sleep(for: .milliseconds(2))
-                    case .samples(let samples):
-                        waitingReads = 0
-                        audioMixer.push(source: session, samples: samples)
-                        startAudioMixLoop()
-                    case .finished:
-                        return
-                    }
-                } catch is CancellationError {
-                    return
-                } catch {
-                    audioErrorMessage = error.localizedDescription
-                    return
-                }
-            }
+    private func removeAudioPipeline(session: UInt32) {
+        audioIngress.remove(session: session)
+        if talkingTracker.clear(session: session) { rebuildChannels() }
+    }
+
+    private func removeAudioPipelinesForDepartedUsers(
+        from oldChannels: [MumbleChannel],
+        to newChannels: [MumbleChannel]
+    ) {
+        let oldSessions = Set(allUsers(in: oldChannels).map(\.id))
+        let newSessions = Set(allUsers(in: newChannels).map(\.id))
+        for session in oldSessions.subtracting(newSessions) {
+            AudioDiagnostics.shared.record("drain.userRemoved session=\(session)")
+            removeAudioPipeline(session: session)
         }
     }
 
     private func startAudioMixLoop() {
-        guard !audioMixClock.isRunning else { return }
         do {
-            try audioCapture.selectOutputDevice(selectedOutputDeviceID)
-            audioCapture.setPlaybackMuted(isDeafened)
-            try audioCapture.startPlayback()
+            let playback = try ensureAudioPlayback()
+            playback.setMuted(isDeafened)
             let mixer = audioMixer
-            let echoCanceller = echoCanceller
-            let audioIO = audioCapture
-            let targetBufferedSamples = 480 * 3
-            audioMixClock.start {
-                while audioIO.bufferedPlaybackSampleCount < targetBufferedSamples {
+            let inputProcessor = inputProcessor
+            let targetBufferedSamples = 480 * 6
+            let silence = [Float](repeating: 0, count: 480)
+            playback.setFillHandler { [weak playback] in
+                guard let playback else { return false }
+                while playback.bufferedSampleCount < targetBufferedSamples {
                     switch mixer.read() {
                     case .inactive:
-                        return false
-                    case .waiting:
+                        // Keep the hardware-driven fill callback installed
+                        // while no remote speaker is active. Receive sources
+                        // are created off MainActor and may appear later.
                         return true
+                    case .waiting:
+                        try? playback.enqueue(samples: silence)
                     case .samples(let samples):
-                        echoCanceller.updateReference(samples)
-                        audioIO.enqueuePlayback(samples: samples)
+                        inputProcessor.tryUpdatePlaybackReference(samples)
+                        try? playback.enqueue(samples: samples)
                     }
                 }
                 return true
@@ -2957,50 +3138,78 @@ final class SessionStore {
     }
 
     private func startUDP(host: String, port: UInt16, cryptState: MumbleCryptState) {
+        let realtimeVoiceRouter = voiceRouter
         guard proxyType == .none else {
             isUsingUDP = false
-            Task { await voiceRouter.configureUDP(nil) }
+            Task { await realtimeVoiceRouter.configureUDP(nil) }
             return
         }
         stopUDP()
-        let udpConnection = MumbleUDPConnection(cryptState: cryptState)
+        let udpConnection = MumbleUDPConnection(
+            cryptState: cryptState,
+            diagnosticsHandler: { AudioDiagnostics.shared.record($0) }
+        )
         self.udpConnection = udpConnection
-        Task { await voiceRouter.configureUDP(udpConnection) }
+        Task { await realtimeVoiceRouter.configureUDP(udpConnection) }
 
-        udpTask = Task {
+        let ingress = audioIngress
+        let protocolVersion = serverProtocolVersion
+        udpTask = Task.detached(priority: .high) { [weak self] in
             let events = await udpConnection.connect(host: host, port: port)
             for await event in events {
                 guard !Task.isCancelled else { return }
                 switch event {
                 case .ready:
-                    startUDPPingLoop(udpConnection)
+                    await self?.startUDPPingLoop(udpConnection)
                 case .packet(let packet):
                     if (try? MumbleUDPPacket.pingTimestamp(
                         from: packet,
-                        protocolVersion: serverProtocolVersion
+                        protocolVersion: protocolVersion
                     )) != nil {
-                        lastUDPResponseAt = Date()
-                        isUsingUDP = true
-                        await voiceRouter.setUDPAvailable(true)
+                        await realtimeVoiceRouter.setUDPAvailable(true)
+                        await self?.markUDPActive()
                     } else {
-                        lastUDPResponseAt = Date()
-                        isUsingUDP = true
-                        await voiceRouter.setUDPAvailable(true)
+                        await realtimeVoiceRouter.setUDPAvailable(true)
                         do {
-                            try handleIncomingAudio(MumbleFrame(type: .udpTunnel, payload: packet))
+                            let audioEvent = try ingress.receive(payload: packet)
+                            DispatchQueue.main.async { [weak self] in
+                                MainActor.assumeIsolated {
+                                    self?.markUDPActive(audioByteCount: packet.count)
+                                    self?.handleAudioIngressEvent(audioEvent)
+                                }
+                            }
                         } catch {
-                            audioErrorMessage = error.localizedDescription
+                            await self?.reportAudioIngressError(error.localizedDescription)
                         }
                     }
                 case .failed:
-                    isUsingUDP = false
-                    await voiceRouter.setUDPAvailable(false)
+                    await realtimeVoiceRouter.setUDPAvailable(false)
+                    await self?.markUDPInactive()
                 case .disconnected:
-                    isUsingUDP = false
-                    await voiceRouter.setUDPAvailable(false)
+                    await realtimeVoiceRouter.setUDPAvailable(false)
+                    await self?.markUDPInactive()
                 }
+                await Task.yield()
             }
         }
+    }
+
+    private func markUDPActive(audioByteCount: Int? = nil) {
+        if let audioByteCount, audioPacketsReceived.isMultiple(of: 100) {
+            AudioDiagnostics.shared.record(
+                "udp.receive bytes=\(audioByteCount) transmitting=\(isTransmitting)"
+            )
+        }
+        lastUDPResponseAt = Date()
+        isUsingUDP = true
+    }
+
+    private func markUDPInactive() {
+        isUsingUDP = false
+    }
+
+    private func reportAudioIngressError(_ message: String) {
+        audioErrorMessage = message
     }
 
     private func startUDPPingLoop(_ udpConnection: MumbleUDPConnection) {
@@ -3060,7 +3269,7 @@ final class SessionStore {
     func selectOutputDevice(_ deviceID: UInt32?) {
         selectedOutputDeviceID = deviceID
         do {
-            try audioCapture.selectOutputDevice(deviceID)
+            try audioPlayback?.selectDevice(deviceID)
             saveDeviceSelection(deviceID, key: "selectedOutputDeviceID")
         } catch {
             audioErrorMessage = error.localizedDescription
@@ -3126,11 +3335,11 @@ final class SessionStore {
         let newUsers = Dictionary(uniqueKeysWithValues: allUsers(in: newChannels).map { ($0.id, $0) })
         for user in newUsers.values where oldUsers[user.id] == nil && user.id != ownSession {
             if notificationsEnabled { MumbleNotificationService.post(title: L10n.text("notifications.userJoined.title"), body: user.name) }
-            if audioCuesEnabled { audioCueService.play(.userJoined) }
+            if audioCuesEnabled { playAudioCue(.userJoined) }
         }
         for user in oldUsers.values where newUsers[user.id] == nil && user.id != ownSession {
             if notificationsEnabled { MumbleNotificationService.post(title: L10n.text("notifications.userLeft.title"), body: user.name) }
-            if audioCuesEnabled { audioCueService.play(.userLeft) }
+            if audioCuesEnabled { playAudioCue(.userLeft) }
         }
     }
 
@@ -3198,8 +3407,13 @@ actor MumbleVoiceRouter {
     private let controlConnection: MumbleControlConnection
     private var udpConnection: MumbleUDPConnection?
     private var udpAvailable = false
-    private var pendingSends: [(Data, CheckedContinuation<Void, Error>)] = []
+    private var pendingSends: [Data] = []
     private var isDrainingSends = false
+    private let maximumPendingVoicePackets = 8
+    private var enqueuedPackets: UInt64 = 0
+    private var sentPackets: UInt64 = 0
+    private var failedPackets: UInt64 = 0
+    private var droppedPackets: UInt64 = 0
 
     init(controlConnection: MumbleControlConnection) {
         self.controlConnection = controlConnection
@@ -3214,23 +3428,47 @@ actor MumbleVoiceRouter {
         udpAvailable = available
     }
 
-    func send(_ packet: Data) async throws {
-        try await withCheckedThrowingContinuation { continuation in
-            pendingSends.append((packet, continuation))
-            guard !isDrainingSends else { return }
-            isDrainingSends = true
-            Task { await drainSends() }
+    func enqueue(_ packet: Data) {
+        enqueuedPackets &+= 1
+        pendingSends.append(packet)
+        if pendingSends.count > maximumPendingVoicePackets {
+            let count = pendingSends.count - maximumPendingVoicePackets
+            pendingSends.removeFirst(count)
+            droppedPackets &+= UInt64(count)
+            AudioDiagnostics.shared.record(
+                "network.drop total=\(droppedPackets) pending=\(pendingSends.count)"
+            )
         }
+        if enqueuedPackets == 1 || enqueuedPackets.isMultiple(of: 100) {
+            AudioDiagnostics.shared.record(
+                "network.enqueue count=\(enqueuedPackets) pending=\(pendingSends.count)"
+            )
+        }
+        guard !isDrainingSends else { return }
+        isDrainingSends = true
+        Task { await drainSends() }
     }
 
     private func drainSends() async {
         while !pendingSends.isEmpty {
-            let (packet, continuation) = pendingSends.removeFirst()
+            let packet = pendingSends.removeFirst()
             do {
                 try await sendImmediately(packet)
-                continuation.resume()
+                sentPackets &+= 1
+                if sentPackets == 1 || sentPackets.isMultiple(of: 100) {
+                    AudioDiagnostics.shared.record(
+                        "network.sent count=\(sentPackets) pending=\(pendingSends.count)"
+                    )
+                }
             } catch {
-                continuation.resume(throwing: error)
+                failedPackets &+= 1
+                if failedPackets == 1 || failedPackets.isMultiple(of: 20) {
+                    AudioDiagnostics.shared.record(
+                        "network.failed count=\(failedPackets) error=\(error.localizedDescription)"
+                    )
+                }
+                // Voice is realtime data. Keep draining newer packets instead
+                // of retaining stale audio behind a transient send failure.
             }
         }
         isDrainingSends = false

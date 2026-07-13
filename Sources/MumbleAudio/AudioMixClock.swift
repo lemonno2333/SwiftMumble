@@ -1,8 +1,8 @@
 import Foundation
 
-/// Drives one mixer read per 10ms audio frame on a dedicated high-priority
-/// queue. Packet arrival order can no longer make concurrent speakers play as
-/// separate back-to-back frames.
+/// Keeps the playback ring near its target fill level. The hardware render
+/// callback remains the only playback clock; this timer only performs mixing
+/// away from the realtime thread.
 public final class AudioMixClock: @unchecked Sendable {
     public typealias TickHandler = @Sendable () -> Bool
 
@@ -26,7 +26,7 @@ public final class AudioMixClock: @unchecked Sendable {
         guard let timer else { return }
         timer.schedule(
             deadline: .now() + .milliseconds(10),
-            repeating: .milliseconds(5),
+            repeating: .milliseconds(2),
             leeway: .milliseconds(1)
         )
         timer.setEventHandler { [weak self] in
