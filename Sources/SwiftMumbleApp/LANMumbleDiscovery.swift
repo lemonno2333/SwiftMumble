@@ -8,12 +8,41 @@ struct DiscoveredMumbleServer: Identifiable, Hashable, Sendable {
     var port: UInt16
 }
 
+struct LANDiscoveryRegistry<Endpoint: Hashable> {
+    private var serversByEndpoint: [Endpoint: DiscoveredMumbleServer] = [:]
+
+    var knownEndpoints: Set<Endpoint> { Set(serversByEndpoint.keys) }
+    var sortedServers: [DiscoveredMumbleServer] {
+        Set(serversByEndpoint.values).sorted {
+            $0.name.localizedStandardCompare($1.name) == .orderedAscending
+        }
+    }
+
+    @discardableResult
+    mutating func store(_ server: DiscoveredMumbleServer, for endpoint: Endpoint) -> Bool {
+        let previousServers = Set(serversByEndpoint.values)
+        serversByEndpoint[endpoint] = server
+        return previousServers != Set(serversByEndpoint.values)
+    }
+
+    @discardableResult
+    mutating func remove(endpoint: Endpoint) -> Bool {
+        let previousServers = Set(serversByEndpoint.values)
+        guard serversByEndpoint.removeValue(forKey: endpoint) != nil else { return false }
+        return previousServers != Set(serversByEndpoint.values)
+    }
+
+    mutating func removeAll() {
+        serversByEndpoint.removeAll()
+    }
+}
+
 final class LANMumbleDiscovery: @unchecked Sendable {
     private let queue = DispatchQueue(label: "com.leo.SwiftMumble.discovery")
     private var browser: NWBrowser?
     private var resolving: [NWEndpoint: NWConnection] = [:]
     private let update: @Sendable ([DiscoveredMumbleServer]) -> Void
-    private var servers: [String: DiscoveredMumbleServer] = [:]
+    private var registry = LANDiscoveryRegistry<NWEndpoint>()
 
     init(update: @escaping @Sendable ([DiscoveredMumbleServer]) -> Void) {
         self.update = update
@@ -37,15 +66,19 @@ final class LANMumbleDiscovery: @unchecked Sendable {
         browser = nil
         resolving.values.forEach { $0.cancel() }
         resolving.removeAll()
-        servers.removeAll()
+        registry.removeAll()
         update([])
     }
 
     private func resolve(_ endpoints: [NWEndpoint]) {
         let live = Set(endpoints)
-        for endpoint in Array(resolving.keys) where !live.contains(endpoint) {
+        var removedServer = false
+        let knownEndpoints = Set(resolving.keys).union(registry.knownEndpoints)
+        for endpoint in knownEndpoints where !live.contains(endpoint) {
             resolving.removeValue(forKey: endpoint)?.cancel()
+            removedServer = registry.remove(endpoint: endpoint) || removedServer
         }
+        if removedServer { publish() }
         for endpoint in endpoints where resolving[endpoint] == nil {
             let connection = NWConnection(to: endpoint, using: .tcp)
             resolving[endpoint] = connection
@@ -62,8 +95,7 @@ final class LANMumbleDiscovery: @unchecked Sendable {
                             host: String(describing: host),
                             port: port.rawValue
                         )
-                        self.servers[server.id] = server
-                        self.publish()
+                        if self.registry.store(server, for: endpoint) { self.publish() }
                     }
                     connection.cancel()
                 case .failed, .cancelled:
@@ -76,6 +108,6 @@ final class LANMumbleDiscovery: @unchecked Sendable {
     }
 
     private func publish() {
-        update(servers.values.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending })
+        update(registry.sortedServers)
     }
 }

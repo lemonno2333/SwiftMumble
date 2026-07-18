@@ -1,23 +1,45 @@
 import Foundation
 
 public final class AdaptiveEchoCanceller: @unchecked Sendable {
+    private static let referenceCapacity = 480
     private let lock = NSLock()
-    private var reference: [Float] = []
+    private let reference: UnsafeMutablePointer<Float>
+    private var referenceCount = 0
     private var echoGain: Float = 0
 
-    public init() {}
+    public init() {
+        reference = .allocate(capacity: Self.referenceCapacity)
+        reference.initialize(repeating: 0, count: Self.referenceCapacity)
+    }
+
+    deinit {
+        reference.deinitialize(count: Self.referenceCapacity)
+        reference.deallocate()
+    }
+
     /// Playback is realtime-critical. A fresh echo reference is optional, so
-    /// never hold the mixer while microphone processing owns this state.
+    /// never block the mix clock while microphone processing owns this state.
+    /// Copies into a preallocated buffer — no allocation on the caller's side.
     @discardableResult
-    public func tryUpdateReference(_ samples: [Float]) -> Bool {
-        guard lock.try() else { return false }
-        reference = samples
+    public func tryUpdateReference(pointer samples: UnsafePointer<Float>, count: Int) -> Bool {
+        guard count <= Self.referenceCapacity, lock.try() else { return false }
+        reference.update(from: samples, count: count)
+        referenceCount = count
         lock.unlock()
         return true
     }
+
+    @discardableResult
+    public func tryUpdateReference(_ samples: [Float]) -> Bool {
+        samples.withUnsafeBufferPointer { buffer in
+            guard let base = buffer.baseAddress else { return false }
+            return tryUpdateReference(pointer: base, count: buffer.count)
+        }
+    }
+
     public func process(_ microphone: [Float]) -> [Float] {
         lock.lock(); defer { lock.unlock() }
-        guard reference.count == microphone.count, !reference.isEmpty else { return microphone }
+        guard referenceCount == microphone.count, referenceCount > 0 else { return microphone }
         var cross: Float = 0, referencePower: Float = 0, microphonePower: Float = 0
         for i in microphone.indices {
             cross += microphone[i] * reference[i]
@@ -32,5 +54,11 @@ public final class AdaptiveEchoCanceller: @unchecked Sendable {
         } else { echoGain *= 0.98 }
         return microphone.indices.map { min(1, max(-1, microphone[$0] - reference[$0] * echoGain)) }
     }
-    public func reset() { lock.lock(); reference = []; echoGain = 0; lock.unlock() }
+
+    public func reset() {
+        lock.lock()
+        referenceCount = 0
+        echoGain = 0
+        lock.unlock()
+    }
 }

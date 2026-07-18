@@ -31,10 +31,12 @@ public actor MumbleUDPConnection {
         let stream = AsyncStream.makeStream(of: MumbleUDPEvent.self)
         events = stream.continuation
         let endpointPort = NWEndpoint.Port(rawValue: port) ?? .init(integerLiteral: 64738)
+        let parameters: NWParameters = .udp
+        parameters.serviceClass = .interactiveVoice
         let connection = NWConnection(
             host: NWEndpoint.Host(host),
             port: endpointPort,
-            using: .udp
+            using: parameters
         )
         self.connection = connection
         sendPath.setConnection(connection)
@@ -47,6 +49,13 @@ public actor MumbleUDPConnection {
 
     public nonisolated func send(_ plaintext: Data) async throws {
         try await sendPath.send(plaintext)
+    }
+
+    /// Packets that arrived but failed authentication/decryption. A rising
+    /// count with no successful decrypts is the signature of OCB2 nonce
+    /// desynchronization and gates the crypt-resync request.
+    public nonisolated var rejectedPacketCount: UInt64 {
+        diagnostics.rejectedPacketCount
     }
 
     public func disconnect() {
@@ -121,6 +130,10 @@ private final class MumbleUDPDiagnosticsProbe: @unchecked Sendable {
 
     init(handler: (@Sendable (String) -> Void)?) {
         self.handler = handler
+    }
+
+    var rejectedPacketCount: UInt64 {
+        lock.withLock { rejectedCount }
     }
 
     func recordRaw(data: Data?, error: NWError?) {

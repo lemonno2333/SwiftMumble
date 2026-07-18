@@ -18,7 +18,10 @@ public final class AudioTransmitEncodingQueue: @unchecked Sendable {
     )
     private let pendingLock = NSLock()
     private var pendingFrameJobs = 0
-    private let maximumPendingFrameJobs = 4
+    // 80 ms of microphone audio may queue before frames drop — enough to ride
+    // out a scheduling burst without adding steady-state latency (the queue
+    // drains faster than realtime whenever CPU is available).
+    private let maximumPendingFrameJobs = 8
     private var droppedFrameJobs: UInt64 = 0
     private var encodedPackets: UInt64 = 0
     private var pipeline: AudioTransmitPipeline?

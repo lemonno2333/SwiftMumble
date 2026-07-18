@@ -12,6 +12,10 @@ public struct AdaptiveJitterEstimator: Equatable, Sendable {
     private var previousTransit: TimeInterval?
     private var lossPenaltyFrames = 0
     private var stableFrameCount = 0
+    // A talkspurt boundary resets the sender's frame counter, so `transit`
+    // steps by whatever the silence gap was. 100 ms of real jitter is huge, so
+    // anything past this is a baseline shift and must not poison the average.
+    private let baselineShiftThreshold: TimeInterval = 0.1
 
     public init(
         frameDuration: TimeInterval = 0.01,
@@ -35,7 +39,9 @@ public struct AdaptiveJitterEstimator: Equatable, Sendable {
         let transit = arrivalTime - Double(frameNumber) * frameDuration
         if let previousTransit {
             let deviation = abs(transit - previousTransit)
-            estimatedJitter += (deviation - estimatedJitter) / 16
+            if deviation < baselineShiftThreshold {
+                estimatedJitter += (deviation - estimatedJitter) / 16
+            }
         }
         self.previousTransit = transit
         stableFrameCount += 1

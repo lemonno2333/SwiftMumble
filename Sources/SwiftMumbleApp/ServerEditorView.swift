@@ -58,9 +58,11 @@ struct ServerEditorView: View {
                     .foregroundStyle(.secondary)
                 DisclosureGroup(L10n.text("certificate.title")) {
                     TextField(L10n.text("certificate.fingerprint"), text: $certificateFingerprint)
-                    Text(L10n.text("certificate.fingerprint.help"))
+                    Text(L10n.text(isCertificateFingerprintValid
+                        ? "certificate.fingerprint.help"
+                        : "certificate.fingerprint.invalid"))
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(isCertificateFingerprintValid ? Color.secondary : Color.red)
                 }
             }
             .formStyle(.grouped)
@@ -69,13 +71,16 @@ struct ServerEditorView: View {
                 Spacer()
                 Button(L10n.text("common.cancel"), role: .cancel) { dismiss() }
                 Button(server == nil ? L10n.text("server.addConnect") : L10n.text("common.save")) {
+                    let trimmedHost = host.trimmingCharacters(in: .whitespacesAndNewlines)
                     let updatedServer = MumbleServer(
                         id: server?.id ?? UUID(),
-                        name: name.isEmpty ? host : name,
-                        host: host,
+                        name: name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            ? trimmedHost
+                            : name.trimmingCharacters(in: .whitespacesAndNewlines),
+                        host: trimmedHost,
                         port: UInt16(port) ?? 64738,
-                        username: username,
-                        certificateFingerprint: certificateFingerprint.isEmpty ? nil : certificateFingerprint,
+                        username: username.trimmingCharacters(in: .whitespacesAndNewlines),
+                        certificateFingerprint: parsedCertificateFingerprint?.hex,
                         isFavorite: server?.isFavorite ?? false
                     )
                     if server == nil {
@@ -95,11 +100,11 @@ struct ServerEditorView: View {
                     }
                     dismiss()
                     if server == nil {
-                        session.connect(password: password)
+                        session.connect(to: updatedServer, password: password)
                     }
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !isCertificateFingerprintValid)
             }
         }
         .padding(24)
@@ -111,5 +116,15 @@ struct ServerEditorView: View {
             .components(separatedBy: CharacterSet(charactersIn: ",\n"))
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
+    }
+
+    private var parsedCertificateFingerprint: MumbleCertificateFingerprint? {
+        let value = certificateFingerprint.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : MumbleCertificateFingerprint(hex: value)
+    }
+
+    private var isCertificateFingerprintValid: Bool {
+        certificateFingerprint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || parsedCertificateFingerprint != nil
     }
 }

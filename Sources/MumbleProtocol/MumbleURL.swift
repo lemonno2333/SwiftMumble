@@ -16,7 +16,14 @@ public struct MumbleURL: Equatable, Sendable {
     public init?(url: URL) {
         guard url.scheme?.lowercased() == "mumble", let host = url.host, !host.isEmpty else { return nil }
         self.host = host
-        port = UInt16(url.port ?? 64738)
+        // URL.port is an unclamped Int; a crafted link like mumble://host:99999
+        // would trap on UInt16(...). Reject an out-of-range port instead.
+        if let rawPort = url.port {
+            guard let port = UInt16(exactly: rawPort) else { return nil }
+            self.port = port
+        } else {
+            port = 64738
+        }
         username = url.user?.removingPercentEncoding
         channelPath = url.pathComponents.dropFirst().compactMap { component in
             let decoded = component.removingPercentEncoding ?? component

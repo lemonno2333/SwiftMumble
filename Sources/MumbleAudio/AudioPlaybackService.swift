@@ -8,20 +8,15 @@ public enum AudioPlaybackError: Error {
     case coreAudio(OSStatus)
 }
 
-public final class AudioPlaybackService: @unchecked Sendable {
-    public typealias FillHandler = @Sendable () -> Bool
-
+public final class AudioPlaybackService: AudioPlaybackBackend, @unchecked Sendable {
     private let ring: AudioSampleRingBuffer
     private let overlayRing: AudioSampleRingBuffer
     private let configurationLock = NSLock()
-    private let fillLock = NSLock()
     private let scratchCapacity = 8_192
     private let scratch: UnsafeMutablePointer<Float>
     private var selectedDeviceID: AudioDeviceID?
     private var audioUnit: AudioUnit?
     private var isRunning = false
-    private var renderCount: UInt64 = 0
-    private var fillHandler: FillHandler?
 
     public init() throws {
         let ring = AudioSampleRingBuffer(capacity: 48_000 * 2)
@@ -72,6 +67,11 @@ public final class AudioPlaybackService: @unchecked Sendable {
         ring.enqueue(samples)
     }
 
+    /// Allocation-free enqueue for the mix clock.
+    public func enqueue(samples: UnsafePointer<Float>, count: Int) {
+        ring.enqueue(samples, count: count)
+    }
+
     public func enqueueOverlay(samples: [Float]) {
         overlayRing.enqueue(samples)
     }
@@ -82,10 +82,6 @@ public final class AudioPlaybackService: @unchecked Sendable {
     }
 
     public var bufferedSampleCount: Int { ring.availableSampleCount }
-
-    public func setFillHandler(_ handler: FillHandler?) {
-        fillLock.withLock { fillHandler = handler }
-    }
 
     /// Matches the workaround used by official Mumble and Mozilla cubeb for
     /// macOS voice-capture sessions that automatically duck the output device.
@@ -107,25 +103,16 @@ public final class AudioPlaybackService: @unchecked Sendable {
         AudioDiagnostics.shared.record("playback.unduck device=\(deviceID) status=\(status)")
     }
 
+    /// Runs on the CoreAudio realtime thread: copy out of the ring buffers and
+    /// nothing else — no blocking locks, no allocation, no logging, no dispatch.
     fileprivate func render(frameCount: UInt32, outputData: UnsafeMutablePointer<AudioBufferList>) -> OSStatus {
         guard isRunning, frameCount <= scratchCapacity else {
             Self.clear(outputData, frameCount: frameCount)
             return noErr
         }
         let count = Int(frameCount)
-        renderCount &+= 1
-        runFillHandler()
         ring.render(into: scratch, count: count)
         overlayRing.mix(into: scratch, count: count)
-        if renderCount == 1 || renderCount.isMultiple(of: 100) {
-            let renders = renderCount
-            let buffered = ring.availableSampleCount
-            var peak: Float = 0
-            for index in 0..<count { peak = max(peak, abs(scratch[index])) }
-            AudioDiagnostics.shared.record(
-                "playback.render count=\(renders) frames=\(frameCount) buffered=\(buffered) peak=\(peak)"
-            )
-        }
 
         let buffers = UnsafeMutableAudioBufferListPointer(outputData)
         for buffer in buffers {
@@ -140,14 +127,6 @@ public final class AudioPlaybackService: @unchecked Sendable {
             }
         }
         return noErr
-    }
-
-    private func runFillHandler() {
-        guard fillLock.try() else { return }
-        let handler = fillHandler
-        fillLock.unlock()
-        guard let handler else { return }
-        if !handler() { fillLock.withLock { fillHandler = nil } }
     }
 
     private func prepareUnlocked() throws {
@@ -225,10 +204,9 @@ public final class AudioPlaybackService: @unchecked Sendable {
     private func stopUnlocked() {
         if isRunning, let audioUnit { AudioOutputUnitStop(audioUnit) }
         isRunning = false
-        AudioDiagnostics.shared.record("playback.stop renders=\(renderCount)")
+        AudioDiagnostics.shared.record("playback.stop")
         ring.reset()
         overlayRing.reset()
-        setFillHandler(nil)
     }
 
     private func shutdown() {
@@ -310,17 +288,37 @@ final class AudioSampleRingBuffer: @unchecked Sendable {
     var availableSampleCount: Int { lock.withLock { available } }
 
     func enqueue(_ samples: [Float]) {
+        samples.withUnsafeBufferPointer { buffer in
+            guard let base = buffer.baseAddress else { return }
+            enqueue(base, count: buffer.count)
+        }
+    }
+
+    func enqueue(_ samples: UnsafePointer<Float>, count: Int) {
+        guard count > 0 else { return }
         lock.withLock {
-            let source = samples.count > storage.count ? samples.suffix(storage.count) : samples[...]
-            for sample in source {
-                if available == storage.count {
-                    readIndex = (readIndex + 1) % storage.count
-                    available -= 1
-                }
-                storage[writeIndex] = sample
-                writeIndex = (writeIndex + 1) % storage.count
-                available += 1
+            var source = samples
+            var remaining = count
+            if remaining > storage.count {
+                source += remaining - storage.count
+                remaining = storage.count
             }
+            // Drop the oldest samples when the ring would overflow.
+            let overflow = available + remaining - storage.count
+            if overflow > 0 {
+                readIndex = (readIndex + overflow) % storage.count
+                available -= overflow
+            }
+            storage.withUnsafeMutableBufferPointer { destination in
+                var written = 0
+                while written < remaining {
+                    let chunk = min(remaining - written, destination.count - writeIndex)
+                    (destination.baseAddress! + writeIndex).update(from: source + written, count: chunk)
+                    writeIndex = (writeIndex + chunk) % destination.count
+                    written += chunk
+                }
+            }
+            available += remaining
         }
     }
 

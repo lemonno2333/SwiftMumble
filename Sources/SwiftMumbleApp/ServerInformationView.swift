@@ -5,10 +5,10 @@ struct ServerInformationView: View {
     @Environment(\.dismiss) private var dismiss
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Label(session.selectedServer?.name ?? "Mumble", systemImage: "server.rack")
+            Label(session.activeServer?.name ?? "Mumble", systemImage: "server.rack")
                 .font(.title2.weight(.semibold))
             Form {
-                LabeledContent(L10n.text("serverInfo.address"), value: session.selectedServer.map { "\($0.host):\($0.port)" } ?? "-")
+                LabeledContent(L10n.text("serverInfo.address"), value: session.activeServer.map { "\($0.host):\($0.port)" } ?? "-")
                 LabeledContent(L10n.text("serverInfo.transport"), value: session.transportLabel)
                 LabeledContent(L10n.text("serverInfo.controlPing"), value: session.lastControlPingMilliseconds.map { String(format: "%.1f ms", $0) } ?? "-")
                 LabeledContent(L10n.text("serverInfo.users"), value: "\(session.flattenedChannels.flatMap(\.users).count) / \(session.serverMaximumUsers.map(String.init) ?? "-")")
@@ -17,7 +17,7 @@ struct ServerInformationView: View {
                 LabeledContent(L10n.text("serverInfo.imageLimit"), value: "\(session.serverImageMessageLengthLimit)")
                 LabeledContent(L10n.text("serverInfo.recording"), value: session.serverRecordingAllowed ? L10n.text("common.yes") : L10n.text("common.no"))
                 LabeledContent(L10n.text("serverInfo.proxy"), value: session.proxyType == .none ? L10n.text("settings.proxy.none") : session.proxyType.rawValue)
-                if let fingerprint = session.selectedServer?.certificateFingerprint {
+                if let fingerprint = session.activeServer?.certificateFingerprint {
                     LabeledContent("SHA-256", value: fingerprint).textSelection(.enabled)
                 }
             }.formStyle(.grouped)

@@ -1,54 +1,54 @@
 import Foundation
 
-public enum AudioFrameMixerRead: Equatable, Sendable {
-    case inactive
-    case waiting
-    case samples([Float])
-}
-
+/// Gain staging and limiting for the 10 ms mix tick.
+///
+/// The mix clock owns the frame cadence: it calls `beginFrame()`, then
+/// `accumulate(source:samples:)` once per speaker that produced audio this
+/// tick, then `finalizeFrame(into:)`. The mixer holds no queues — per-speaker
+/// buffering lives in each `AudioReceivePipeline`'s jitter buffer, which is
+/// where late frames can still be concealed correctly.
+///
+/// Configuration setters (gain, mute, ducking, master volume) are safe to call
+/// from any thread; the mix-path methods must only be called from the single
+/// mix clock thread.
 public final class AudioFrameMixer: @unchecked Sendable {
     private let lock = NSLock()
     private let frameLength: Int
-    private let maximumQueuedFramesPerSource: Int
-    private var queues: [UInt32: [[Float]]] = [:]
     private var gains: [UInt32: Float] = [:]
     private var mutedSources: Set<UInt32> = []
     private var masterGain: Float = 1
     private var duckingGain: Float = 0.35
     private var isDucking = false
-    private var droppedFrames = 0
     private var limiterGain: Float = 1
-    private var renderedFrameCount: UInt64 = 0
 
-    public init(frameLength: Int = 480, maximumQueuedFramesPerSource: Int = 6) {
+    private let accumulator: UnsafeMutablePointer<Float>
+    private var accumulatedSources = 0
+
+    public init(frameLength: Int = 480) {
         precondition(frameLength > 0)
-        precondition(maximumQueuedFramesPerSource > 0)
         self.frameLength = frameLength
-        self.maximumQueuedFramesPerSource = maximumQueuedFramesPerSource
+        accumulator = .allocate(capacity: frameLength)
+        accumulator.initialize(repeating: 0, count: frameLength)
     }
 
-    public var droppedFrameCount: Int {
-        lock.withLock { droppedFrames }
+    deinit {
+        accumulator.deinitialize(count: frameLength)
+        accumulator.deallocate()
     }
 
     public func register(source: UInt32) {
-        lock.withLock {
-            if queues[source] == nil { queues[source] = [] }
-        }
+        // Sources start at unity gain, unmuted; nothing to prepare.
     }
 
     public func unregister(source: UInt32) {
         lock.withLock {
-            _ = queues.removeValue(forKey: source)
             gains.removeValue(forKey: source)
             mutedSources.remove(source)
-            if queues.isEmpty { limiterGain = 1 }
         }
     }
 
     public func removeAllSources() {
         lock.withLock {
-            queues.removeAll()
             gains.removeAll()
             mutedSources.removeAll()
             limiterGain = 1
@@ -77,66 +77,54 @@ public final class AudioFrameMixer: @unchecked Sendable {
 
     public func setDuckingActive(_ active: Bool) {
         lock.withLock { isDucking = active }
-        AudioDiagnostics.shared.record("mixer.ducking active=\(active)")
     }
 
-    public func push(source: UInt32, samples: [Float]) {
-        guard samples.count == frameLength else { return }
-        lock.withLock {
-            var queue = queues[source] ?? []
-            if queue.count >= maximumQueuedFramesPerSource {
-                queue.removeFirst()
-                droppedFrames += 1
-            }
-            queue.append(samples)
-            queues[source] = queue
-        }
+    // MARK: - Mix path (single mix-clock thread only)
+
+    public func beginFrame() {
+        accumulator.update(repeating: 0, count: frameLength)
+        accumulatedSources = 0
     }
 
-    public func read() -> AudioFrameMixerRead {
-        lock.withLock {
-            guard !queues.isEmpty else { return .inactive }
-            guard queues.values.contains(where: { !$0.isEmpty }) else { return .waiting }
-
-            var mixed = [Float](repeating: 0, count: frameLength)
-            for source in Array(queues.keys) {
-                guard var queue = queues[source], !queue.isEmpty else { continue }
-                let frame = queue.removeFirst()
-                queues[source] = queue
-                // Drain muted sources so their latency does not build up, but
-                // keep their samples out of the mix.
-                if mutedSources.contains(source) { continue }
-                let gain = gains[source] ?? 1
-                if gain == 1 {
-                    for index in mixed.indices { mixed[index] += frame[index] }
-                } else {
-                    for index in mixed.indices { mixed[index] += frame[index] * gain }
-                }
-            }
-            let outputGain = masterGain * (isDucking ? duckingGain : 1)
-            var peak: Float = 0
-            for index in mixed.indices {
-                mixed[index] *= outputGain
-                peak = max(peak, abs(mixed[index]))
-            }
-            let targetGain: Float = peak > 0.98 ? 0.98 / peak : 1
-            if targetGain < limiterGain {
-                limiterGain = targetGain
-            } else {
-                limiterGain += (targetGain - limiterGain) * 0.05
-            }
-            for index in mixed.indices {
-                mixed[index] = min(0.98, max(-0.98, mixed[index] * limiterGain))
-            }
-            renderedFrameCount &+= 1
-            if renderedFrameCount == 1 || renderedFrameCount.isMultiple(of: 100) {
-                let outputPeak = mixed.reduce(Float.zero) { max($0, abs($1)) }
-                AudioDiagnostics.shared.record(
-                    "mixer.output count=\(renderedFrameCount) peak=\(outputPeak) gain=\(outputGain) ducking=\(isDucking)"
-                )
-            }
-            return .samples(mixed)
+    /// Adds one speaker's frame (exactly `frameLength` samples) into the
+    /// accumulator with that speaker's gain. Muted sources are skipped.
+    public func accumulate(source: UInt32, samples: UnsafePointer<Float>) {
+        let configuration = lock.withLock { (mutedSources.contains(source), gains[source] ?? 1) }
+        guard !configuration.0 else { return }
+        let gain = configuration.1
+        if gain == 1 {
+            for index in 0..<frameLength { accumulator[index] += samples[index] }
+        } else {
+            guard gain > 0 else { return }
+            for index in 0..<frameLength { accumulator[index] += samples[index] * gain }
         }
+        accumulatedSources += 1
+    }
+
+    /// Applies master gain, ducking, and the smoothed limiter, writing the
+    /// final frame into `output` (capacity at least `frameLength`). Returns the
+    /// number of sources that contributed since `beginFrame()`.
+    @discardableResult
+    public func finalizeFrame(into output: UnsafeMutablePointer<Float>) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        let outputGain = masterGain * (isDucking ? duckingGain : 1)
+        var peak: Float = 0
+        for index in 0..<frameLength {
+            let sample = accumulator[index] * outputGain
+            accumulator[index] = sample
+            peak = max(peak, abs(sample))
+        }
+        let targetGain: Float = peak > 0.98 ? 0.98 / peak : 1
+        if targetGain < limiterGain {
+            limiterGain = targetGain
+        } else {
+            limiterGain += (targetGain - limiterGain) * 0.05
+        }
+        for index in 0..<frameLength {
+            output[index] = min(0.98, max(-0.98, accumulator[index] * limiterGain))
+        }
+        return accumulatedSources
     }
 }
 

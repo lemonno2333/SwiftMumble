@@ -59,6 +59,12 @@ public final class AudioInputProcessor: @unchecked Sendable {
         echoCanceller.tryUpdateReference(samples)
     }
 
+    /// Allocation-free variant used by the mix clock.
+    @discardableResult
+    public func tryUpdatePlaybackReference(pointer samples: UnsafePointer<Float>, count: Int) -> Bool {
+        echoCanceller.tryUpdateReference(pointer: samples, count: count)
+    }
+
     public func resetEchoCancellation() {
         echoCanceller.reset()
     }

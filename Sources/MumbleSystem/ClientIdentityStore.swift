@@ -1,6 +1,7 @@
 import CryptoKit
 import Foundation
 import Security
+import X509
 
 public struct ClientIdentityInfo: Equatable, Sendable {
     public let subject: String
@@ -306,45 +307,24 @@ public enum ClientIdentityStore {
                 keyError?.takeRetainedValue().localizedDescription ?? "Unknown Security.framework error"
             )
         }
-        guard let publicKey = SecKeyCopyPublicKey(privateKey) else {
-            throw ClientIdentityStoreError.publicKeyUnavailable
-        }
-        var exportError: Unmanaged<CFError>?
-        guard let publicKeyData = SecKeyCopyExternalRepresentation(publicKey, &exportError) as Data? else {
-            throw ClientIdentityStoreError.publicKeyExportFailed(
-                exportError?.takeRetainedValue().localizedDescription ?? "Unknown Security.framework error"
-            )
-        }
-
         let notBefore = Date().addingTimeInterval(-300)
         let notAfter = Calendar(identifier: .gregorian).date(byAdding: .year, value: 10, to: notBefore)
             ?? notBefore.addingTimeInterval(10 * 365 * 24 * 60 * 60)
-        let tbsCertificate = SelfSignedCertificateBuilder.tbsCertificate(
-            commonName: "SwiftMumble Client",
-            rsaPublicKeyPKCS1: publicKeyData,
-            notBefore: notBefore,
-            notAfter: notAfter
-        )
-        var signingError: Unmanaged<CFError>?
-        guard let signature = SecKeyCreateSignature(
-            privateKey,
-            .rsaSignatureMessagePKCS1v15SHA256,
-            tbsCertificate as CFData,
-            &signingError
-        ) as Data? else {
+        let certificate: SecCertificate
+        do {
+            certificate = try SelfSignedCertificateBuilder.certificate(
+                commonName: "SwiftMumble Client",
+                privateKey: privateKey,
+                notBefore: notBefore,
+                notAfter: notAfter
+            )
+        } catch {
             try? delete()
             throw ClientIdentityStoreError.certificateSigningFailed(
-                signingError?.takeRetainedValue().localizedDescription ?? "Unknown Security.framework error"
+                error.localizedDescription
             )
         }
-        let certificateData = SelfSignedCertificateBuilder.certificate(
-            tbsCertificate: tbsCertificate,
-            signature: signature
-        )
-        guard let certificate = SecCertificateCreateWithData(nil, certificateData as CFData) else {
-            try? delete()
-            throw ClientIdentityStoreError.invalidCertificate
-        }
+        let certificateData = SecCertificateCopyData(certificate) as Data
 
         do {
             try addCertificate(certificate)
@@ -437,7 +417,13 @@ public enum ClientIdentityStore {
             throw ClientIdentityStoreError.importFailed(status)
         }
         guard let items = importedItems as? [[CFString: Any]],
-              let identity = items.compactMap({ $0[kSecImportItemIdentity] as! SecIdentity? }).first else {
+              let identity = items.compactMap({ item -> SecIdentity? in
+                  guard let value = item[kSecImportItemIdentity],
+                        CFGetTypeID(value as CFTypeRef) == SecIdentityGetTypeID() else {
+                      return nil
+                  }
+                  return (value as! SecIdentity)
+              }).first else {
             throw ClientIdentityStoreError.identityNotFound
         }
         return ImportedIdentityResult(identity: identity, isPersistent: !importsToMemory)
@@ -491,129 +477,32 @@ public enum ClientIdentityStore {
 }
 
 enum SelfSignedCertificateBuilder {
-    private static let sha256WithRSA = DER.sequence(
-        DER.objectIdentifier([1, 2, 840, 113549, 1, 1, 11]),
-        DER.null
-    )
-
-    static func tbsCertificate(
+    static func certificate(
         commonName: String,
-        rsaPublicKeyPKCS1: Data,
+        privateKey: SecKey,
         notBefore: Date,
         notAfter: Date
-    ) -> Data {
-        var serial = Data(count: 16)
-        _ = serial.withUnsafeMutableBytes {
-            SecRandomCopyBytes(kSecRandomDefault, $0.count, $0.baseAddress!)
+    ) throws -> SecCertificate {
+        let signingKey = try Certificate.PrivateKey(privateKey)
+        let name = try DistinguishedName {
+            CommonName(commonName)
         }
-        let name = DER.sequence(
-            DER.set(
-                DER.sequence(
-                    DER.objectIdentifier([2, 5, 4, 3]),
-                    DER.utf8String(commonName)
-                )
-            )
+        let certificate = try Certificate(
+            version: .v3,
+            serialNumber: .init(),
+            publicKey: signingKey.publicKey,
+            notValidBefore: notBefore,
+            notValidAfter: notAfter,
+            issuer: name,
+            subject: name,
+            signatureAlgorithm: .sha256WithRSAEncryption,
+            extensions: try Certificate.Extensions {
+                Critical(BasicConstraints.notCertificateAuthority)
+                Critical(KeyUsage(digitalSignature: true, keyEncipherment: true))
+                try ExtendedKeyUsage([.clientAuth])
+            },
+            issuerPrivateKey: signingKey
         )
-        let publicKeyAlgorithm = DER.sequence(
-            DER.objectIdentifier([1, 2, 840, 113549, 1, 1, 1]),
-            DER.null
-        )
-        let subjectPublicKeyInfo = DER.sequence(
-            publicKeyAlgorithm,
-            DER.bitString(rsaPublicKeyPKCS1)
-        )
-        let extensions = DER.sequence(
-            DER.sequence(
-                DER.objectIdentifier([2, 5, 29, 19]),
-                DER.boolean(true),
-                DER.octetString(DER.sequence())
-            ),
-            DER.sequence(
-                DER.objectIdentifier([2, 5, 29, 15]),
-                DER.boolean(true),
-                DER.octetString(DER.bitString(Data([0xa0]), unusedBits: 5))
-            ),
-            DER.sequence(
-                DER.objectIdentifier([2, 5, 29, 37]),
-                DER.octetString(
-                    DER.sequence(DER.objectIdentifier([1, 3, 6, 1, 5, 5, 7, 3, 2]))
-                )
-            )
-        )
-        return DER.sequence(
-            DER.contextConstructed(0, DER.integer(Data([2]))),
-            DER.integer(serial),
-            sha256WithRSA,
-            name,
-            DER.sequence(DER.utcTime(notBefore), DER.utcTime(notAfter)),
-            name,
-            subjectPublicKeyInfo,
-            DER.contextConstructed(3, extensions)
-        )
-    }
-
-    static func certificate(tbsCertificate: Data, signature: Data) -> Data {
-        DER.sequence(tbsCertificate, sha256WithRSA, DER.bitString(signature))
-    }
-}
-
-private enum DER {
-    static let null = Data([0x05, 0x00])
-
-    static func sequence(_ values: Data...) -> Data { tagged(0x30, values.reduce(Data(), +)) }
-    static func set(_ values: Data...) -> Data { tagged(0x31, values.reduce(Data(), +)) }
-    static func contextConstructed(_ number: UInt8, _ value: Data) -> Data { tagged(0xa0 | number, value) }
-    static func utf8String(_ value: String) -> Data { tagged(0x0c, Data(value.utf8)) }
-    static func boolean(_ value: Bool) -> Data { tagged(0x01, Data([value ? 0xff : 0x00])) }
-    static func octetString(_ value: Data) -> Data { tagged(0x04, value) }
-    static func bitString(_ value: Data, unusedBits: UInt8 = 0) -> Data {
-        tagged(0x03, Data([unusedBits]) + value)
-    }
-
-    static func integer(_ value: Data) -> Data {
-        var normalized = value.drop { $0 == 0 }
-        if normalized.isEmpty { normalized = Data.SubSequence([0]) }
-        var bytes = Data(normalized)
-        if let first = bytes.first, first & 0x80 != 0 { bytes.insert(0, at: 0) }
-        return tagged(0x02, bytes)
-    }
-
-    static func objectIdentifier(_ arcs: [UInt64]) -> Data {
-        precondition(arcs.count >= 2)
-        var body = Data([UInt8(arcs[0] * 40 + arcs[1])])
-        for arc in arcs.dropFirst(2) {
-            var value = arc
-            var encoded = [UInt8(value & 0x7f)]
-            value >>= 7
-            while value > 0 {
-                encoded.insert(UInt8(value & 0x7f) | 0x80, at: 0)
-                value >>= 7
-            }
-            body.append(contentsOf: encoded)
-        }
-        return tagged(0x06, body)
-    }
-
-    static func utcTime(_ date: Date) -> Data {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(secondsFromGMT: 0)
-        formatter.dateFormat = "yyMMddHHmmss'Z'"
-        return tagged(0x17, Data(formatter.string(from: date).utf8))
-    }
-
-    private static func tagged(_ tag: UInt8, _ value: Data) -> Data {
-        Data([tag]) + length(value.count) + value
-    }
-
-    private static func length(_ count: Int) -> Data {
-        if count < 128 { return Data([UInt8(count)]) }
-        var value = count
-        var bytes: [UInt8] = []
-        while value > 0 {
-            bytes.insert(UInt8(value & 0xff), at: 0)
-            value >>= 8
-        }
-        return Data([0x80 | UInt8(bytes.count)] + bytes)
+        return try SecCertificate.makeWithCertificate(certificate)
     }
 }

@@ -45,6 +45,8 @@ public struct MumbleServerState: Sendable {
         var prioritySpeaker: Bool
         var commentText: String
         var avatarData: Data?
+        var commentHash: Data?
+        var avatarHash: Data?
         var hasCommentResource: Bool
         var hasAvatarResource: Bool
     }
@@ -124,6 +126,8 @@ public struct MumbleServerState: Sendable {
                 prioritySpeaker: false,
                 commentText: "",
                 avatarData: nil,
+                commentHash: nil,
+                avatarHash: nil,
                 hasCommentResource: false,
                 hasAvatarResource: false
             )
@@ -137,7 +141,15 @@ public struct MumbleServerState: Sendable {
             if message.hasUserID { user.registeredUserID = message.userID }
             if message.hasPrioritySpeaker { user.prioritySpeaker = message.prioritySpeaker }
             if message.hasComment { user.commentText = message.comment }
+            if message.hasCommentHash {
+                if !message.hasComment, user.commentHash != message.commentHash { user.commentText = "" }
+                user.commentHash = message.commentHash
+            }
             if message.hasTexture { user.avatarData = message.texture.isEmpty ? nil : message.texture }
+            if message.hasTextureHash {
+                if !message.hasTexture, user.avatarHash != message.textureHash { user.avatarData = nil }
+                user.avatarHash = message.textureHash
+            }
             if message.hasComment || message.hasCommentHash { user.hasCommentResource = true }
             if message.hasTexture || message.hasTextureHash { user.hasAvatarResource = true }
             users[message.session] = user

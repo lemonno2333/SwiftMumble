@@ -45,7 +45,16 @@ public struct AudioJitterBuffer<Packet: Equatable & Sendable>: Sendable {
 
     public mutating func read() -> JitterBufferRead<Packet> {
         if !hasStarted {
-            guard packets.count >= targetDelayFrames, let first = packets.keys.min() else {
+            // Frame numbers advance in 10 ms units, so the buffered *span*
+            // (not the packet count) measures how much audio is ready. This
+            // keeps the configured delay meaning "frames × 10 ms" regardless
+            // of how many frames the sender packs per packet.
+            // `last - first` is unsigned and can exceed Int.max when a hostile
+            // peer sends wildly separated frame numbers, so compare the span in
+            // UInt64 space rather than narrowing to Int (which would trap on the
+            // mix-clock thread). targetDelayFrames is >= 1 by construction.
+            guard let first = packets.keys.min(), let last = packets.keys.max(),
+                  last - first >= UInt64(targetDelayFrames) - 1 else {
                 return .waiting
             }
             expectedFrameNumber = first

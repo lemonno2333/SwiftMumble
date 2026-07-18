@@ -14,6 +14,7 @@ public enum MumbleVoicePacketError: Error, Equatable {
     case unsupportedMessageType(UInt8)
     case invalidTarget(UInt32)
     case truncatedLegacyPacket
+    case sessionOutOfRange(UInt64)
 }
 
 public enum MumbleVoicePacket {
@@ -115,9 +116,14 @@ public enum MumbleVoicePacket {
         guard packet.count >= offset + opusLength else {
             throw MumbleVoicePacketError.truncatedLegacyPacket
         }
+        // Session IDs are 32-bit on the wire; a hostile server can encode a
+        // full 8-byte varint here, so reject instead of trapping on narrowing.
+        guard let senderSession32 = UInt32(exactly: senderSession) else {
+            throw MumbleVoicePacketError.sessionOutOfRange(senderSession)
+        }
 
         return MumbleIncomingAudio(
-            senderSession: UInt32(senderSession),
+            senderSession: senderSession32,
             frameNumber: frameNumber,
             opusData: packet.subdata(in: offset..<(offset + opusLength)),
             isTerminator: isTerminator,

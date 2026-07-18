@@ -222,6 +222,11 @@ struct MumbleProbe {
             case .untrustedCertificate(let subject, let fingerprint):
                 print("Untrusted certificate: \(subject) \(fingerprint.formatted)")
                 await connection.disconnect()
+            case .certificateMismatch(let subject, let expected, let actual):
+                print(
+                    "Certificate mismatch: \(subject) expected=\(expected.formatted) actual=\(actual.formatted)"
+                )
+                await connection.disconnect()
             case .failed(let message):
                 print("Connection failed: \(message)")
             case .disconnected:

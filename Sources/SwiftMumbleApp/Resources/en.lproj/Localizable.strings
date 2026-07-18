@@ -76,6 +76,7 @@
 "chat.you" = "You";
 "chat.server" = "Server";
 "chat.sendError" = "Could not send message: %@";
+"chat.notConnected" = "Wait until the server connection is ready before sending a message.";
 "people.one" = "1 person";
 "people.many" = "%lld people";
 "connection.disconnected" = "Disconnected";
@@ -187,8 +188,11 @@
 "certificate.title" = "Certificate";
 "certificate.fingerprint" = "Pinned SHA-256 fingerprint";
 "certificate.fingerprint.help" = "Optional. Use the 64-digit SHA-256 fingerprint of the server certificate.";
+"certificate.fingerprint.invalid" = "Enter a valid 64-digit SHA-256 fingerprint, or leave this field empty.";
 "certificate.verify.title" = "Verify Server Certificate";
 "certificate.verify.message" = "The certificate for %@ is not trusted by macOS. Verify its fingerprint before continuing.";
+"certificate.mismatch.message" = "The certificate for %@ has changed. Compare the previous and new fingerprints before replacing the saved certificate.";
+"certificate.previousFingerprint" = "Previous SHA-256";
 "certificate.subject" = "Subject";
 "certificate.trustReconnect" = "Trust and Reconnect";
 "certificate.confirmRequired" = "Certificate confirmation required";
@@ -396,3 +400,19 @@
 "settings.connection" = "Connection";
 "settings.interface" = "Interface";
 "settings.shortcuts" = "Shortcuts";
+
+/* Unread & mentions */
+"chat.unreadDivider" = "New Messages";
+"chat.mentionsYou" = "Mentions you";
+"notifications.mention.title" = "%@ mentioned you";
+
+/* Audio error banner */
+"audio.banner.title" = "Audio Problem";
+
+/* Dead connection */
+"connection.timedOut" = "The server stopped responding";
+
+/* Voice processing backend */
+"settings.voiceProcessing" = "System Voice Processing (Experimental)";
+"settings.voiceProcessing.help" = "Uses macOS voice processing for echo cancellation and gain control through a single full-duplex audio unit. The microphone stays open while connected, and input device selection follows the system default.";
+"settings.voiceProcessing.restartRequired" = "System voice processing will take effect the next time you launch SwiftMumble.";

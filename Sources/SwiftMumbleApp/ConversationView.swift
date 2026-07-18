@@ -6,6 +6,7 @@ struct ConversationView: View {
 
     var body: some View {
         @Bindable var session = session
+        @Bindable var chat = session.chat
 
         Group {
             if let channel = session.selectedChannel {
@@ -13,13 +14,17 @@ struct ConversationView: View {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 18) {
                             WelcomeMessage(channelName: channel.name)
-                            ForEach(session.chatEntries) { entry in
+                            ForEach(chat.entries) { entry in
+                                if entry.id == chat.unreadMarkerID {
+                                    UnreadDivider()
+                                }
                                 ChatMessage(
                                     author: entry.author,
                                     time: session.formattedChatTime(entry.timestamp),
                                     text: entry.text,
                                     isLocal: entry.isLocal,
-                                    isPrivate: entry.isPrivate
+                                    isPrivate: entry.isPrivate,
+                                    isMention: entry.isMention
                                 )
                             }
                         }
@@ -56,17 +61,18 @@ private struct ChatComposer: View {
 
     var body: some View {
         @Bindable var session = session
+        @Bindable var chat = session.chat
 
         HStack(alignment: .bottom, spacing: 10) {
             ZStack(alignment: .topLeading) {
-                if session.chatDraft.isEmpty && !isComposing {
+                if chat.draft.isEmpty && !isComposing {
                     Text(L10n.text("chat.placeholder"))
                         .foregroundStyle(.tertiary)
                         .padding(.top, 2)
                         .allowsHitTesting(false)
                 }
                 NativeTextEditor(
-                    text: $session.chatDraft,
+                    text: $chat.draft,
                     contentHeight: $editorHeight,
                     onSubmit: sendIfPossible,
                     onComplete: session.completeChatUsername,
@@ -92,18 +98,23 @@ private struct ChatComposer: View {
             }
             .buttonStyle(.borderedProminent)
             .buttonBorderShape(.circle)
-            .disabled(isEmpty)
+            .disabled(isEmpty || !isConnected)
             .help(L10n.text("chat.send"))
         }
         .padding(16)
     }
 
     private var isEmpty: Bool {
-        session.chatDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        session.chat.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var isConnected: Bool {
+        if case .connected = session.connectionState { return true }
+        return false
     }
 
     private func sendIfPossible() {
-        guard !isEmpty else { return }
+        guard !isEmpty, isConnected else { return }
         session.sendChatMessage()
     }
 }
@@ -125,12 +136,27 @@ private struct WelcomeMessage: View {
     }
 }
 
+private struct UnreadDivider: View {
+    var body: some View {
+        HStack(spacing: 10) {
+            Rectangle().fill(.red.opacity(0.45)).frame(height: 1)
+            Text(L10n.text("chat.unreadDivider"))
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.red)
+                .fixedSize()
+            Rectangle().fill(.red.opacity(0.45)).frame(height: 1)
+        }
+        .accessibilityElement(children: .combine)
+    }
+}
+
 private struct ChatMessage: View {
     let author: String
     let time: String
     let text: String
     let isLocal: Bool
     var isPrivate: Bool = false
+    var isMention: Bool = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 11) {
@@ -153,6 +179,12 @@ private struct ChatMessage: View {
                     Text(author)
                         .fontWeight(.semibold)
                         .foregroundStyle(isPrivate ? accentTint : .primary)
+                    if isMention {
+                        Image(systemName: "at")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(.orange)
+                            .help(L10n.text("chat.mentionsYou"))
+                    }
                     Text(time)
                         .font(.caption)
                         .foregroundStyle(.tertiary)
@@ -166,6 +198,13 @@ private struct ChatMessage: View {
                             }
                         }
                     }
+            }
+        }
+        .padding(isMention ? 8 : 0)
+        .background {
+            if isMention {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(.orange.opacity(0.12))
             }
         }
     }

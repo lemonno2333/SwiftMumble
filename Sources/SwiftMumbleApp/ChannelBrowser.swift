@@ -1,37 +1,20 @@
 import MumbleProtocol
 import SwiftUI
 
+private enum ChannelBrowserSelection: Hashable {
+    case channel(MumbleChannel.ID)
+    case user(UInt32)
+}
+
 struct ChannelBrowser: View {
     @Environment(SessionStore.self) private var session
-    @State private var highlightedChannelID: MumbleChannel.ID?
-    @State private var highlightedUserID: UInt32?
+    @State private var selection: ChannelBrowserSelection?
 
     var body: some View {
         @Bindable var session = session
+        @Bindable var chat = session.chat
 
-        GeometryReader { geometry in
-            ScrollView {
-                VStack(alignment: .leading, spacing: 1) {
-                    ForEach(session.visibleChannels) { channel in
-                        ChannelNode(
-                            channel: channel,
-                            highlightedChannelID: $highlightedChannelID,
-                            highlightedUserID: $highlightedUserID
-                        )
-                    }
-                    Spacer(minLength: 40)
-                        .frame(maxWidth: .infinity)
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            highlightedChannelID = nil
-                            highlightedUserID = nil
-                        }
-                }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 6)
-                .frame(maxWidth: .infinity, minHeight: geometry.size.height, alignment: .topLeading)
-            }
-        }
+        channelList
         .toolbar {
             if session.showsHideEmptyChannelsControl {
                 ToolbarItem(placement: .secondaryAction) {
@@ -44,8 +27,8 @@ struct ChannelBrowser: View {
                 }
             }
         }
-        .navigationTitle(session.selectedServer?.name ?? L10n.text("channels.title"))
-        .navigationSubtitle(session.selectedServer.map { "\($0.host):\($0.port)" } ?? L10n.text("server.noneSelected"))
+        .navigationTitle(session.activeServer?.name ?? session.selectedServer?.name ?? L10n.text("channels.title"))
+        .navigationSubtitle((session.activeServer ?? session.selectedServer).map { "\($0.host):\($0.port)" } ?? L10n.text("server.noneSelected"))
         .overlay {
             if session.channels.isEmpty {
                 ContentUnavailableView(
@@ -55,7 +38,7 @@ struct ChannelBrowser: View {
                 )
             }
         }
-        .sheet(item: $session.privateMessageTarget) { user in
+        .sheet(item: $chat.privateMessageTarget) { user in
             PrivateMessageComposer(user: user)
                 .environment(session)
         }
@@ -97,6 +80,15 @@ struct ChannelBrowser: View {
         }
     }
 
+    private var channelList: some View {
+        List(selection: $selection) {
+            ForEach(session.visibleChannels) { channel in
+                ChannelNode(channel: channel)
+            }
+        }
+        .listStyle(.sidebar)
+    }
+
     private var emptyTitle: String {
         if case .failed = session.connectionState { return L10n.text("connection.failed") }
         return L10n.text("channels.empty")
@@ -111,16 +103,12 @@ struct ChannelBrowser: View {
 private struct ChannelNode: View {
     @Environment(SessionStore.self) private var session
     let channel: MumbleChannel
-    @Binding var highlightedChannelID: MumbleChannel.ID?
-    @Binding var highlightedUserID: UInt32?
 
     var body: some View {
         if channel.children.isEmpty && channel.users.isEmpty {
             ChannelLabel(channel: channel)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 3)
-                .background(channelHighlight)
-                .gesture(channelClickGesture)
+                .tag(ChannelBrowserSelection.channel(channel.id))
+                .onTapGesture(count: 2) { joinChannel() }
                 .contextMenu { channelMenu }
                 .dropDestination(for: String.self) { items, _ in handleDrop(items) }
         } else {
@@ -129,51 +117,19 @@ private struct ChannelNode: View {
                 set: { session.setChannelExpanded(channel, expanded: $0) }
             )) {
                 ForEach(channel.users) { user in
-                    UserRow(
-                        user: user,
-                        highlightedUserID: $highlightedUserID,
-                        highlightedChannelID: $highlightedChannelID
-                    )
+                    UserRow(user: user)
+                        .tag(ChannelBrowserSelection.user(user.id))
                 }
                 ForEach(channel.children) { child in
-                    ChannelNode(
-                        channel: child,
-                        highlightedChannelID: $highlightedChannelID,
-                        highlightedUserID: $highlightedUserID
-                    )
+                    ChannelNode(channel: child)
                 }
             } label: {
                 ChannelLabel(channel: channel)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 3)
-                    .background(channelHighlight)
-                    .gesture(channelClickGesture)
+                    .onTapGesture(count: 2) { joinChannel() }
                     .contextMenu { channelMenu }
                     .dropDestination(for: String.self) { items, _ in handleDrop(items) }
             }
-        }
-    }
-
-    private var channelHighlight: some View {
-        RoundedRectangle(cornerRadius: 6)
-            .fill(
-                session.selectedChannelID == channel.id
-                    ? Color.accentColor.opacity(0.32)
-                    : (highlightedChannelID == channel.id ? Color.accentColor.opacity(0.12) : .clear)
-            )
-    }
-
-    private var channelClickGesture: some Gesture {
-        TapGesture(count: 2).exclusively(before: TapGesture(count: 1)).onEnded { click in
-            switch click {
-            case .first:
-                highlightedUserID = nil
-                highlightedChannelID = channel.id
-                joinChannel()
-            case .second:
-                highlightedUserID = nil
-                highlightedChannelID = channel.id
-            }
+            .tag(ChannelBrowserSelection.channel(channel.id))
         }
     }
 
@@ -292,8 +248,12 @@ private struct ChannelLabel: View {
     let channel: MumbleChannel
 
     var body: some View {
+        let isCurrentChannel = session.selectedChannelID == channel.id
+
         HStack(spacing: 8) {
-            Image(systemName: channel.canEnter ? "waveform.circle" : "lock.circle")
+            Image(systemName: channel.canEnter
+                ? (isCurrentChannel ? "waveform.circle.fill" : "waveform.circle")
+                : "lock.circle")
                 .foregroundStyle(channel.canEnter ? Color.accentColor : .secondary)
             Text(channel.name)
                 .fontWeight(.medium)
@@ -336,25 +296,24 @@ private struct ChannelLabel: View {
 private struct UserRow: View {
     @Environment(SessionStore.self) private var session
     let user: MumbleUser
-    @Binding var highlightedUserID: UInt32?
-    @Binding var highlightedChannelID: MumbleChannel.ID?
 
     private static let volumePresets: [Float] = [0.5, 0.75, 1, 1.25, 1.5, 2]
 
     var body: some View {
         let isLocallyMuted = session.isLocallyMuted(user)
+        let isTalking = session.isTalking(user)
 
         HStack(spacing: 9) {
             ZStack {
                 Circle()
-                    .fill(user.isTalking && !isLocallyMuted ? Color.green : Color.secondary.opacity(0.18))
+                    .fill(isTalking && !isLocallyMuted ? Color.green : Color.secondary.opacity(0.18))
                     .frame(width: 26, height: 26)
                 if let data = user.avatarData, let image = NSImage(data: data) {
                     Image(nsImage: image).resizable().scaledToFill().clipShape(.circle)
                 } else {
                     Text(session.displayName(for: user).prefix(1).uppercased())
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(user.isTalking && !isLocallyMuted ? .white : .secondary)
+                        .foregroundStyle(isTalking && !isLocallyMuted ? .white : .secondary)
                 }
             }
 
@@ -363,7 +322,7 @@ private struct UserRow: View {
 
             Spacer()
 
-            if user.isTalking && !isLocallyMuted {
+            if isTalking && !isLocallyMuted {
                 Image(systemName: "waveform.circle.fill")
                     .font(.caption)
                     .foregroundStyle(.green)
@@ -406,25 +365,8 @@ private struct UserRow: View {
                     .foregroundStyle(.blue)
             }
         }
-        .padding(.leading, 20)
         .padding(.vertical, 2)
-        .padding(.horizontal, 5)
         .contentShape(.rect)
-        .background {
-            RoundedRectangle(cornerRadius: 6)
-                .fill(highlightedUserID == user.id ? Color.accentColor.opacity(0.12) : .clear)
-        }
-        .overlay {
-            RoundedRectangle(cornerRadius: 6)
-                .stroke(
-                    highlightedUserID == user.id ? Color.accentColor.opacity(0.35) : .clear,
-                    lineWidth: 1
-                )
-        }
-        .onTapGesture {
-            highlightedChannelID = nil
-            highlightedUserID = user.id
-        }
         .contextMenu { contextMenu(isLocallyMuted: isLocallyMuted) }
         .draggable("user:\(user.id)")
     }
@@ -432,7 +374,7 @@ private struct UserRow: View {
     @ViewBuilder
     private func contextMenu(isLocallyMuted: Bool) -> some View {
         Button {
-            session.privateMessageTarget = user
+            session.chat.privateMessageTarget = user
         } label: {
             Label(L10n.text("user.sendMessage"), systemImage: "bubble.left")
         }
@@ -561,9 +503,9 @@ private struct UserInformationView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
-                Label(currentUser.name, systemImage: currentUser.isTalking ? "waveform.circle.fill" : "person.crop.circle")
+                Label(currentUser.name, systemImage: isTalking ? "waveform.circle.fill" : "person.crop.circle")
                     .font(.title2.weight(.semibold))
-                    .foregroundStyle(currentUser.isTalking ? Color.green : .primary)
+                    .foregroundStyle(isTalking ? Color.green : .primary)
                 Spacer()
                 Button {
                     session.closeUserInformation()
@@ -619,6 +561,10 @@ private struct UserInformationView: View {
 
     private var currentUser: MumbleUser {
         session.currentUser(sessionID: user.id) ?? user
+    }
+
+    private var isTalking: Bool {
+        session.isTalking(currentUser)
     }
 
     private func infoRow(_ key: String, value: String) -> some View {

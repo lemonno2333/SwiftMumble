@@ -10,28 +10,13 @@ import Testing
     ]
     var error: Unmanaged<CFError>?
     let privateKey = try #require(SecKeyCreateRandomKey(attributes as CFDictionary, &error))
-    let publicKey = try #require(SecKeyCopyPublicKey(privateKey))
-    let publicData = try #require(SecKeyCopyExternalRepresentation(publicKey, &error) as Data?)
     let now = Date()
-    let tbs = SelfSignedCertificateBuilder.tbsCertificate(
+    let certificate = try SelfSignedCertificateBuilder.certificate(
         commonName: "SwiftMumble Test",
-        rsaPublicKeyPKCS1: publicData,
+        privateKey: privateKey,
         notBefore: now.addingTimeInterval(-60),
         notAfter: now.addingTimeInterval(3600)
     )
-    let signature = try #require(
-        SecKeyCreateSignature(
-            privateKey,
-            .rsaSignatureMessagePKCS1v15SHA256,
-            tbs as CFData,
-            &error
-        ) as Data?
-    )
-    let certificateData = SelfSignedCertificateBuilder.certificate(
-        tbsCertificate: tbs,
-        signature: signature
-    )
-    let certificate = try #require(SecCertificateCreateWithData(nil, certificateData as CFData))
     #expect(SecCertificateCopySubjectSummary(certificate) as String? == "SwiftMumble Test")
 }
 
@@ -61,28 +46,14 @@ import Testing
     ]
     var error: Unmanaged<CFError>?
     let privateKey = try #require(SecKeyCreateRandomKey(attributes as CFDictionary, &error))
-    let publicKey = try #require(SecKeyCopyPublicKey(privateKey))
-    let publicData = try #require(SecKeyCopyExternalRepresentation(publicKey, &error) as Data?)
     let now = Date()
-    let tbs = SelfSignedCertificateBuilder.tbsCertificate(
+    let certificate = try SelfSignedCertificateBuilder.certificate(
         commonName: "SwiftMumble PKCS12 Test",
-        rsaPublicKeyPKCS1: publicData,
+        privateKey: privateKey,
         notBefore: now.addingTimeInterval(-60),
         notAfter: now.addingTimeInterval(3600)
     )
-    let signature = try #require(
-        SecKeyCreateSignature(
-            privateKey,
-            .rsaSignatureMessagePKCS1v15SHA256,
-            tbs as CFData,
-            &error
-        ) as Data?
-    )
-    let certificateData = SelfSignedCertificateBuilder.certificate(
-        tbsCertificate: tbs,
-        signature: signature
-    )
-    let certificate = try #require(SecCertificateCreateWithData(nil, certificateData as CFData))
+    let certificateData = SecCertificateCopyData(certificate) as Data
     storedCertificate = certificate
     #expect(SecItemAdd([
         kSecClass: kSecClassCertificate,

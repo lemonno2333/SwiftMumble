@@ -26,12 +26,14 @@ final class SwiftMumbleAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
+        session?.applicationActivityChanged(isActive: true)
         systemTouchBarController?.removeFromControlStrip()
         NSApplication.shared.touchBar = touchBarController?.makeTouchBar()
         attachTouchBarToAllWindows()
     }
 
     func applicationDidResignActive(_ notification: Notification) {
+        session?.applicationActivityChanged(isActive: false)
         updateControlStripPresentation()
     }
 

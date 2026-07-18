@@ -22,7 +22,11 @@ public enum MumbleUDPPacket {
     }
 
     public static func serverListPingResponse(from packet: Data) throws -> ServerPingResponse? {
-        if packet.count < 24, packet.first == 1 {
+        // Discriminate on the leading type byte, not the length: a protobuf
+        // response (type 1) carrying extended info readily exceeds 24 bytes, so
+        // a length heuristic would misparse it as legacy. Legacy responses begin
+        // with 0x00 — the high byte of the big-endian version u32.
+        if packet.first == 1 {
             let message = try MumbleUDP_Ping(serializedBytes: packet.dropFirst())
             return ServerPingResponse(timestamp: message.timestamp, serverVersion: message.serverVersionV2,
                                       userCount: message.userCount, maxUserCount: message.maxUserCount,

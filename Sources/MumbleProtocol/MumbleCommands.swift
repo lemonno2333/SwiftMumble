@@ -119,6 +119,12 @@ public enum MumbleCommands {
         return try MumbleFrame(type: .userStats, message: message)
     }
 
+    /// An empty CryptSetup asks the server to re-send its nonce so the OCB2
+    /// decrypt stream can recover after sustained packet loss desynchronizes it.
+    public static func requestCryptResync() throws -> MumbleFrame {
+        try MumbleFrame(type: .cryptSetup, message: MumbleProto_CryptSetup())
+    }
+
     public static func requestChannelDescription(channelID: UInt32) throws -> MumbleFrame {
         var message = MumbleProto_RequestBlob()
         message.channelDescription = [channelID]

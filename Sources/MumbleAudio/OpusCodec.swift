@@ -119,40 +119,59 @@ public final class OpusDecoder: @unchecked Sendable {
 
     public func decode(packet: Data, maximumFrameSize: Int = 5_760) throws -> [Float] {
         var samples = [Float](repeating: 0, count: maximumFrameSize)
-        let decodedSamples = packet.withUnsafeBytes { packetBuffer in
-            samples.withUnsafeMutableBufferPointer { sampleBuffer in
-                opus_decode_float(
-                    decoder,
-                    packetBuffer.bindMemory(to: UInt8.self).baseAddress,
-                    Int32(packet.count),
-                    sampleBuffer.baseAddress!,
-                    Int32(maximumFrameSize),
-                    0
-                )
-            }
+        let decodedSamples = try samples.withUnsafeMutableBufferPointer { sampleBuffer in
+            try decode(packet: packet, into: sampleBuffer.baseAddress!, capacity: maximumFrameSize)
         }
-
-        guard decodedSamples >= 0 else {
-            throw OpusCodecError.decodingFailed(code: decodedSamples)
-        }
-        return Array(samples.prefix(Int(decodedSamples)))
+        return Array(samples.prefix(decodedSamples))
     }
 
-    public func decodeMissing(frameSize: Int = 480) throws -> [Float] {
-        var samples = [Float](repeating: 0, count: frameSize)
-        let decodedSamples = samples.withUnsafeMutableBufferPointer { sampleBuffer in
+    /// Allocation-free variant for the realtime mix path: decodes into a
+    /// caller-owned scratch buffer and returns the produced sample count.
+    public func decode(
+        packet: Data,
+        into output: UnsafeMutablePointer<Float>,
+        capacity: Int
+    ) throws -> Int {
+        let decodedSamples = packet.withUnsafeBytes { packetBuffer in
             opus_decode_float(
                 decoder,
-                nil,
-                0,
-                sampleBuffer.baseAddress!,
-                Int32(frameSize),
+                packetBuffer.bindMemory(to: UInt8.self).baseAddress,
+                Int32(packet.count),
+                output,
+                Int32(capacity),
                 0
             )
         }
         guard decodedSamples >= 0 else {
             throw OpusCodecError.decodingFailed(code: decodedSamples)
         }
-        return Array(samples.prefix(Int(decodedSamples)))
+        return Int(decodedSamples)
+    }
+
+    public func decodeMissing(frameSize: Int = 480) throws -> [Float] {
+        var samples = [Float](repeating: 0, count: frameSize)
+        let decodedSamples = try samples.withUnsafeMutableBufferPointer { sampleBuffer in
+            try decodeMissing(into: sampleBuffer.baseAddress!, frameSize: frameSize)
+        }
+        return Array(samples.prefix(decodedSamples))
+    }
+
+    /// Allocation-free packet-loss concealment into a caller-owned buffer.
+    public func decodeMissing(
+        into output: UnsafeMutablePointer<Float>,
+        frameSize: Int = 480
+    ) throws -> Int {
+        let decodedSamples = opus_decode_float(
+            decoder,
+            nil,
+            0,
+            output,
+            Int32(frameSize),
+            0
+        )
+        guard decodedSamples >= 0 else {
+            throw OpusCodecError.decodingFailed(code: decodedSamples)
+        }
+        return Int(decodedSamples)
     }
 }

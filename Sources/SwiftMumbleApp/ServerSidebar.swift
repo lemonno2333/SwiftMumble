@@ -3,61 +3,46 @@ import SwiftUI
 
 struct ServerSidebar: View {
     @Environment(SessionStore.self) private var session
-    @State private var highlightedServerID: MumbleServer.ID?
 
     var body: some View {
         @Bindable var session = session
 
-        GeometryReader { geometry in
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    serverSectionHeader(L10n.text("servers.title"))
+        List(selection: selectedServerBinding) {
+            Section(L10n.text("servers.title")) {
                 ForEach(session.servers) { server in
-                    Button {
-                        highlightedServerID = server.id
-                        session.selectedServerID = server.id
-                    } label: {
-                        ServerRow(server: server)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 5)
-                            .background {
-                                RoundedRectangle(cornerRadius: 6)
-                                    .fill(highlightedServerID == server.id ? Color.accentColor.opacity(0.22) : .clear)
-                            }
-                    }
-                        .buttonStyle(.plain)
-                        .simultaneousGesture(TapGesture(count: 2).onEnded {
+                    ServerRow(server: server)
+                        .tag(server.id)
+                        .onTapGesture(count: 2) {
                             session.handleServerDoubleClick(server)
-                        })
+                        }
                         .contextMenu {
-                            if session.selectedServerID == server.id,
-                               session.connectionState != .disconnected {
+                            if session.hasActiveSession(for: server) {
                                 Button(L10n.text("server.disconnect"), systemImage: "bolt.slash") {
                                     session.disconnect()
                                 }
                             } else {
                                 Button(L10n.text("server.connect"), systemImage: "bolt") {
-                                    session.selectedServerID = server.id
-                                    session.connect()
+                                    session.connect(to: server)
                                 }
                             }
 
                             Divider()
 
                             Button(L10n.text("server.copyURL"), systemImage: "link") {
-                                session.selectedServerID = server.id
-                                session.copyURL(session.serverURL())
+                                session.copyURL(session.serverURL(for: server))
                             }
                             Button(L10n.text("registeredUsers.title"), systemImage: "person.3") {
-                                session.selectedServerID = server.id
                                 session.isShowingRegisteredUsers = true
                             }
+                            .disabled(!session.canUseServerSessionActions(for: server))
                             Button(L10n.text("serverInfo.title"), systemImage: "info.circle") {
-                                session.selectedServerID = server.id; session.isShowingServerInformation = true
+                                session.isShowingServerInformation = true
                             }
-                            ForEach(session.contextActions(for: 1)) { action in
-                                Button(action.title, systemImage: "command") { session.performContextAction(action) }
+                            .disabled(!session.canUseServerSessionActions(for: server))
+                            if session.canUseServerSessionActions(for: server) {
+                                ForEach(session.contextActions(for: 1)) { action in
+                                    Button(action.title, systemImage: "command") { session.performContextAction(action) }
+                                }
                             }
 
                             Button(L10n.text("common.edit"), systemImage: "pencil") {
@@ -72,8 +57,10 @@ struct ServerSidebar: View {
                             }
                         }
                 }
+            }
+
             if !session.discoveredServers.isEmpty {
-                serverSectionHeader(L10n.text("servers.localNetwork"))
+                Section(L10n.text("servers.localNetwork")) {
                     ForEach(session.discoveredServers) { server in
                         Label {
                             VStack(alignment: .leading, spacing: 2) {
@@ -84,19 +71,26 @@ struct ServerSidebar: View {
                             }
                         } icon: { Image(systemName: "bonjour") }
                         .contentShape(Rectangle())
-                        .simultaneousGesture(TapGesture(count: 2).onEnded {
+                        .onTapGesture(count: 2) {
                             session.connectToDiscoveredServer(server)
-                        })
+                        }
+                        .selectionDisabled(true)
                         .contextMenu {
                             Button(L10n.text("server.addAndConnect"), systemImage: "bolt.badge.plus") {
                                 session.connectToDiscoveredServer(server)
                             }
                         }
                     }
+                }
             }
+
             if session.publicServerDirectoryEnabled {
-                serverSectionHeader(L10n.text("servers.public"))
-                    if session.isLoadingPublicServers { ProgressView().controlSize(.small) }
+                Section(L10n.text("servers.public")) {
+                    if session.isLoadingPublicServers {
+                        ProgressView()
+                            .controlSize(.small)
+                            .selectionDisabled(true)
+                    }
                     ForEach(session.publicServers.prefix(200)) { server in
                         Label {
                             VStack(alignment: .leading, spacing: 2) {
@@ -110,26 +104,30 @@ struct ServerSidebar: View {
                             }
                         } icon: { Image(systemName: "globe") }
                         .contentShape(Rectangle())
-                        .simultaneousGesture(TapGesture(count: 2).onEnded {
+                        .onTapGesture(count: 2) {
                             session.connectToPublicServer(server)
-                        })
+                        }
+                        .selectionDisabled(true)
                     }
-                    if let error = session.publicServerError { Text(error).font(.caption).foregroundStyle(.red) }
-                    Button(L10n.text("servers.public.refresh"), systemImage: "arrow.clockwise") { session.refreshPublicServers() }
+                    if let error = session.publicServerError {
+                        Text(error)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                            .selectionDisabled(true)
+                    }
+                    Button(L10n.text("servers.public.refresh"), systemImage: "arrow.clockwise") {
+                        session.refreshPublicServers()
+                    }
+                    .selectionDisabled(true)
                     Button(L10n.text("servers.public.measure"), systemImage: "gauge.with.dots.needle.33percent") {
                         session.pingVisiblePublicServers()
-                    }.disabled(session.isPingingPublicServers)
-            }
-                    Spacer(minLength: 40)
-                        .frame(maxWidth: .infinity)
-                        .contentShape(Rectangle())
-                        .onTapGesture { highlightedServerID = nil }
+                    }
+                    .disabled(session.isPingingPublicServers)
+                    .selectionDisabled(true)
                 }
-                .padding(.horizontal, 10)
-                .padding(.top, 10)
-                .frame(minHeight: geometry.size.height, alignment: .top)
             }
         }
+        .listStyle(.sidebar)
         .safeAreaInset(edge: .bottom) {
             HStack {
                 Button {
@@ -153,11 +151,14 @@ struct ServerSidebar: View {
         .navigationTitle("Mumble")
     }
 
-    private func serverSectionHeader(_ title: String) -> some View {
-        Text(title.uppercased())
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 8)
+    private var selectedServerBinding: Binding<MumbleServer.ID?> {
+        Binding(
+            get: { session.selectedServerID },
+            set: { id in
+                guard let id, let server = session.servers.first(where: { $0.id == id }) else { return }
+                session.selectServer(server)
+            }
+        )
     }
 }
 

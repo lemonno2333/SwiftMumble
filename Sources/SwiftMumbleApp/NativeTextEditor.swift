@@ -114,12 +114,23 @@ struct NativeTextEditor: NSViewRepresentable {
                 onComplete()
                 return true
             case #selector(NSResponder.moveUp(_:)):
-                guard let onHistoryUp = parent.onHistoryUp else { return false }
+                guard textView.selectedRange().length == 0,
+                      textView.selectedRange().location == 0,
+                      let onHistoryUp = parent.onHistoryUp else { return false }
                 onHistoryUp()
+                DispatchQueue.main.async {
+                    textView.setSelectedRange(NSRange(location: textView.string.utf16.count, length: 0))
+                }
                 return true
             case #selector(NSResponder.moveDown(_:)):
-                guard let onHistoryDown = parent.onHistoryDown else { return false }
+                let selection = textView.selectedRange()
+                guard selection.length == 0,
+                      selection.location == textView.string.utf16.count,
+                      let onHistoryDown = parent.onHistoryDown else { return false }
                 onHistoryDown()
+                DispatchQueue.main.async {
+                    textView.setSelectedRange(NSRange(location: textView.string.utf16.count, length: 0))
+                }
                 return true
             default:
                 return false

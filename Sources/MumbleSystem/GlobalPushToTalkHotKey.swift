@@ -1,14 +1,12 @@
 import Carbon
 import Foundation
+import KeyboardShortcuts
 
 public enum GlobalPushToTalkHotKeyError: LocalizedError {
-    case eventHandlerInstallationFailed(OSStatus)
     case registrationFailed(OSStatus)
 
     public var errorDescription: String? {
         switch self {
-        case .eventHandlerInstallationFailed(let status):
-            "Could not install the global hot key event handler (\(status))."
         case .registrationFailed(let status):
             "Could not register the selected global hot key (\(status))."
         }
@@ -53,6 +51,24 @@ public struct GlobalHotKeyShortcut: Codable, Equatable, Sendable {
         if carbonModifiers & UInt32(cmdKey) != 0 { value += "⌘" }
         return value + keyLabel
     }
+
+    public var keyboardShortcut: KeyboardShortcuts.Shortcut {
+        KeyboardShortcuts.Shortcut(
+            carbonKeyCode: Int(keyCode),
+            carbonModifiers: Int(carbonModifiers)
+        )
+    }
+
+    @MainActor
+    public init(keyboardShortcut: KeyboardShortcuts.Shortcut) {
+        keyCode = UInt32(keyboardShortcut.carbonKeyCode)
+        carbonModifiers = UInt32(keyboardShortcut.carbonModifiers)
+        let modifiers = keyboardShortcut.modifiers.ks_symbolicRepresentation
+        let description = keyboardShortcut.description
+        keyLabel = description.hasPrefix(modifiers)
+            ? String(description.dropFirst(modifiers.count))
+            : description
+    }
 }
 
 public struct PushToTalkHotKeyState: Equatable, Sendable {
@@ -67,13 +83,16 @@ public struct PushToTalkHotKeyState: Equatable, Sendable {
     }
 }
 
-public final class GlobalPushToTalkHotKey: @unchecked Sendable {
-    private var eventHandler: EventHandlerRef?
-    private var hotKey: EventHotKeyRef?
+@MainActor
+public final class GlobalPushToTalkHotKey {
+    private static var enabledShortcuts: [UInt32: GlobalHotKeyShortcut] = [:]
+
+    private let name: KeyboardShortcuts.Name
+    private let identifierID: UInt32
+    private var eventTask: Task<Void, Never>?
     private var state = PushToTalkHotKeyState()
     private var shortcut: GlobalHotKeyShortcut
     private let onPressedChanged: @MainActor @Sendable (Bool) -> Void
-    private let identifierID: UInt32
 
     public init(
         shortcut: GlobalHotKeyShortcut = .default,
@@ -83,86 +102,66 @@ public final class GlobalPushToTalkHotKey: @unchecked Sendable {
         self.shortcut = shortcut
         self.identifierID = identifierID
         self.onPressedChanged = onPressedChanged
-        let eventTypes = [
-            EventTypeSpec(
-                eventClass: OSType(kEventClassKeyboard),
-                eventKind: UInt32(kEventHotKeyPressed)
-            ),
-            EventTypeSpec(
-                eventClass: OSType(kEventClassKeyboard),
-                eventKind: UInt32(kEventHotKeyReleased)
-            )
-        ]
-        let status = eventTypes.withUnsafeBufferPointer { buffer in
-            InstallEventHandler(
-                GetApplicationEventTarget(),
-                globalPushToTalkEventHandler,
-                buffer.count,
-                buffer.baseAddress,
-                Unmanaged.passUnretained(self).toOpaque(),
-                &eventHandler
-            )
-        }
-        guard status == noErr else {
-            throw GlobalPushToTalkHotKeyError.eventHandlerInstallationFailed(status)
+        name = KeyboardShortcuts.Name("SwiftMumble.globalHotKey.\(identifierID)")
+        KeyboardShortcuts.setShortcut(shortcut.keyboardShortcut, for: name)
+        KeyboardShortcuts.disable(name)
+        let events = KeyboardShortcuts.events(for: name)
+        eventTask = Task { [weak self] in
+            for await event in events {
+                guard let self else { return }
+                handle(pressed: event == .keyDown)
+            }
         }
     }
 
     deinit {
-        if let hotKey { UnregisterEventHotKey(hotKey) }
-        if let eventHandler { RemoveEventHandler(eventHandler) }
+        eventTask?.cancel()
+        let identifierID = identifierID
+        Task { @MainActor in
+            Self.enabledShortcuts.removeValue(forKey: identifierID)
+        }
     }
 
     public func setEnabled(_ enabled: Bool) throws {
         if enabled {
-            guard hotKey == nil else { return }
-            let identifier = EventHotKeyID(signature: fourCharacterCode("NMHK"), id: identifierID)
-            let status = RegisterEventHotKey(
-                shortcut.keyCode,
-                shortcut.carbonModifiers,
-                identifier,
-                GetApplicationEventTarget(),
-                0,
-                &hotKey
-            )
-            guard status == noErr else {
-                hotKey = nil
-                throw GlobalPushToTalkHotKeyError.registrationFailed(status)
+            if Self.enabledShortcuts[identifierID] == shortcut { return }
+            guard !Self.enabledShortcuts.contains(where: { id, registered in
+                id != identifierID && registered == shortcut
+            }) else {
+                throw GlobalPushToTalkHotKeyError.registrationFailed(OSStatus(eventHotKeyExistsErr))
             }
+            KeyboardShortcuts.enable(name)
+            guard KeyboardShortcuts.isEnabled(for: name) else {
+                KeyboardShortcuts.disable(name)
+                throw GlobalPushToTalkHotKeyError.registrationFailed(OSStatus(eventHotKeyExistsErr))
+            }
+            Self.enabledShortcuts[identifierID] = shortcut
         } else {
-            if let hotKey { UnregisterEventHotKey(hotKey) }
-            hotKey = nil
+            KeyboardShortcuts.disable(name)
+            Self.enabledShortcuts.removeValue(forKey: identifierID)
             handle(pressed: false)
         }
     }
 
     public func setShortcut(_ shortcut: GlobalHotKeyShortcut) throws {
-        let wasEnabled = hotKey != nil
+        let wasEnabled = Self.enabledShortcuts[identifierID] != nil
+        let previousShortcut = self.shortcut
         if wasEnabled { try setEnabled(false) }
+        KeyboardShortcuts.setShortcut(shortcut.keyboardShortcut, for: name)
         self.shortcut = shortcut
-        if wasEnabled { try setEnabled(true) }
+        guard wasEnabled else { return }
+        do {
+            try setEnabled(true)
+        } catch {
+            self.shortcut = previousShortcut
+            KeyboardShortcuts.setShortcut(previousShortcut.keyboardShortcut, for: name)
+            try? setEnabled(true)
+            throw error
+        }
     }
 
     fileprivate func handle(pressed: Bool) {
         guard let changed = state.apply(pressed: pressed) else { return }
-        Task { @MainActor in onPressedChanged(changed) }
+        onPressedChanged(changed)
     }
-}
-
-private let globalPushToTalkEventHandler: EventHandlerUPP = { _, event, userData in
-    guard let event, let userData else { return OSStatus(eventNotHandledErr) }
-    let monitor = Unmanaged<GlobalPushToTalkHotKey>.fromOpaque(userData).takeUnretainedValue()
-    switch GetEventKind(event) {
-    case UInt32(kEventHotKeyPressed):
-        monitor.handle(pressed: true)
-    case UInt32(kEventHotKeyReleased):
-        monitor.handle(pressed: false)
-    default:
-        return OSStatus(eventNotHandledErr)
-    }
-    return noErr
-}
-
-private func fourCharacterCode(_ value: String) -> FourCharCode {
-    value.utf8.reduce(0) { ($0 << 8) | FourCharCode($1) }
 }

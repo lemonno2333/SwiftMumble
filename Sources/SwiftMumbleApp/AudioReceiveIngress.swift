@@ -6,16 +6,25 @@ struct AudioIngressEvent: Sendable {
     var session: UInt32
     var isTerminator: Bool
     var isSelfAudio: Bool
+    var isNewSource: Bool
 }
 
 /// Owns the realtime receive path so network audio never waits for MainActor.
+///
+/// Packets arriving off the UDP/TCP loop are pushed into per-speaker jitter
+/// buffers. A single mix clock (`AudioMixClock`) pulls one 10 ms frame from
+/// every speaker on a steady cadence, mixes them, and enqueues the result into
+/// the playback ring — so the CoreAudio render thread only ever memcpys.
 final class AudioReceiveIngress: @unchecked Sendable {
     private let lock = NSLock()
     private let mixer: AudioFrameMixer
     private var pipelines: [UInt32: AudioReceivePipeline] = [:]
-    private var drainWorkers: [UInt32: AudioDrainWorker] = [:]
+    /// Immutable snapshot rebuilt on membership changes so the 100 Hz mix
+    /// clock can grab it without copying.
+    private var pipelineList: [(UInt32, AudioReceivePipeline)] = []
     private var ownSession: UInt32?
     private var targetDelayFrames = 3
+    private var mixClock: AudioMixClock?
 
     init(mixer: AudioFrameMixer) {
         self.mixer = mixer
@@ -26,6 +35,30 @@ final class AudioReceiveIngress: @unchecked Sendable {
             self.ownSession = ownSession
             self.targetDelayFrames = targetDelayFrames
         }
+    }
+
+    /// Starts the mix clock, wiring pulled frames into `playback`. Idempotent.
+    func startMixClock(playback: AudioPlaybackBackend, referenceSink: AudioInputProcessor?) {
+        lock.withLock {
+            guard mixClock == nil else { return }
+            let clock = AudioMixClock(
+                mixer: mixer,
+                playback: playback,
+                referenceSink: referenceSink,
+                snapshot: { [weak self] in self?.activePipelines() ?? [] }
+            )
+            mixClock = clock
+            clock.start()
+        }
+    }
+
+    func stopMixClock() {
+        let clock = lock.withLock { () -> AudioMixClock? in
+            let clock = mixClock
+            mixClock = nil
+            return clock
+        }
+        clock?.stop()
     }
 
     var pipelineCount: Int {
@@ -44,6 +77,16 @@ final class AudioReceiveIngress: @unchecked Sendable {
         return values.reduce(0, +) * 10 / values.count
     }
 
+    /// Total concealed frames across all live speakers — health metric for the
+    /// multi-speaker stress path.
+    var concealedFrameCount: UInt64 {
+        lock.withLock { pipelines.values.reduce(0) { $0 + $1.concealedFrameCount } }
+    }
+
+    private func activePipelines() -> [(UInt32, AudioReceivePipeline)] {
+        lock.withLock { pipelineList }
+    }
+
     func receive(payload: Data) throws -> AudioIngressEvent {
         let incoming = try MumbleVoicePacket.decodeTunneledAudio(
             MumbleFrame(type: .udpTunnel, payload: payload)
@@ -53,12 +96,13 @@ final class AudioReceiveIngress: @unchecked Sendable {
             return AudioIngressEvent(
                 session: incoming.senderSession,
                 isTerminator: incoming.isTerminator,
-                isSelfAudio: true
+                isSelfAudio: true,
+                isNewSource: false
             )
         }
 
-        let pipeline = try pipeline(for: incoming.senderSession, targetDelayFrames: configuration.1)
-        pipeline.push(
+        let resolved = try pipeline(for: incoming.senderSession, targetDelayFrames: configuration.1)
+        resolved.pipeline.push(
             frameNumber: incoming.frameNumber,
             packet: BufferedAudioPacket(
                 opusData: incoming.opusData,
@@ -66,115 +110,125 @@ final class AudioReceiveIngress: @unchecked Sendable {
                 isTerminator: incoming.isTerminator
             )
         )
-        lock.withLock { drainWorkers[incoming.senderSession] }?.notifyPacketArrival()
         return AudioIngressEvent(
             session: incoming.senderSession,
             isTerminator: incoming.isTerminator,
-            isSelfAudio: false
+            isSelfAudio: false,
+            isNewSource: resolved.isNew
         )
     }
 
     func remove(session: UInt32) {
-        let worker = lock.withLock { () -> AudioDrainWorker? in
+        lock.withLock {
             pipelines.removeValue(forKey: session)
-            return drainWorkers.removeValue(forKey: session)
+            pipelineList = pipelines.map { ($0.key, $0.value) }
         }
-        worker?.cancel()
         mixer.unregister(source: session)
     }
 
     func removeAll() {
-        let workers = lock.withLock { () -> [AudioDrainWorker] in
-            let workers = Array(drainWorkers.values)
-            drainWorkers.removeAll()
+        lock.withLock {
             pipelines.removeAll()
+            pipelineList = []
             ownSession = nil
-            return workers
         }
-        workers.forEach { $0.cancel() }
         mixer.removeAllSources()
     }
 
-    private func pipeline(for session: UInt32, targetDelayFrames: Int) throws -> AudioReceivePipeline {
-        if let existing = lock.withLock({ pipelines[session] }) { return existing }
+    private func pipeline(
+        for session: UInt32,
+        targetDelayFrames: Int
+    ) throws -> (pipeline: AudioReceivePipeline, isNew: Bool) {
+        if let existing = lock.withLock({ pipelines[session] }) { return (existing, false) }
 
         let pipeline = try AudioReceivePipeline(targetDelayFrames: targetDelayFrames)
-        let worker = AudioDrainWorker(session: session, pipeline: pipeline, mixer: mixer)
-        let installed = lock.withLock { () -> AudioReceivePipeline in
-            if let existing = pipelines[session] {
-                worker.cancel()
-                return existing
-            }
+        let installed = lock.withLock { () -> (AudioReceivePipeline, Bool) in
+            if let existing = pipelines[session] { return (existing, false) }
             pipelines[session] = pipeline
-            drainWorkers[session] = worker
+            pipelineList = pipelines.map { ($0.key, $0.value) }
             mixer.register(source: session)
-            worker.start()
-            return pipeline
+            return (pipeline, true)
         }
         return installed
     }
 }
 
-private final class AudioDrainWorker: @unchecked Sendable {
-    private let session: UInt32
-    private let pipeline: AudioReceivePipeline
+/// Drives the 10 ms mix on a dedicated high-priority timer, off both the
+/// CoreAudio render thread and the MainActor.
+private final class AudioMixClock: @unchecked Sendable {
     private let mixer: AudioFrameMixer
-    private let queue: DispatchQueue
-    private let packetSignal = DispatchSemaphore(value: 0)
-    private let stateLock = NSLock()
-    private var cancelled = false
+    private let playback: AudioPlaybackBackend
+    private let referenceSink: AudioInputProcessor?
+    private let snapshot: @Sendable () -> [(UInt32, AudioReceivePipeline)]
+    private let queue = DispatchQueue(label: "com.leo.SwiftMumble.audioMix", qos: .userInteractive)
+    private let timer: DispatchSourceTimer
+    private let frameLength = 480
+    private let targetBufferedFrames = 3
 
-    init(session: UInt32, pipeline: AudioReceivePipeline, mixer: AudioFrameMixer) {
-        self.session = session
-        self.pipeline = pipeline
+    // Reused across ticks; only the mix-clock queue touches these.
+    private let sourceScratch: UnsafeMutablePointer<Float>
+    private let mixScratch: UnsafeMutablePointer<Float>
+
+    init(
+        mixer: AudioFrameMixer,
+        playback: AudioPlaybackBackend,
+        referenceSink: AudioInputProcessor?,
+        snapshot: @escaping @Sendable () -> [(UInt32, AudioReceivePipeline)]
+    ) {
         self.mixer = mixer
-        queue = DispatchQueue(
-            label: "com.leo.SwiftMumble.audioDrain.\(session)",
-            qos: .userInteractive
-        )
+        self.playback = playback
+        self.referenceSink = referenceSink
+        self.snapshot = snapshot
+        sourceScratch = .allocate(capacity: frameLength)
+        sourceScratch.initialize(repeating: 0, count: frameLength)
+        mixScratch = .allocate(capacity: frameLength)
+        mixScratch.initialize(repeating: 0, count: frameLength)
+        timer = DispatchSource.makeTimerSource(flags: .strict, queue: queue)
+    }
+
+    deinit {
+        sourceScratch.deinitialize(count: frameLength)
+        sourceScratch.deallocate()
+        mixScratch.deinitialize(count: frameLength)
+        mixScratch.deallocate()
     }
 
     func start() {
-        queue.async { [self] in drain() }
+        timer.schedule(deadline: .now(), repeating: .milliseconds(10), leeway: .milliseconds(1))
+        timer.setEventHandler { [weak self] in self?.tick() }
+        timer.resume()
     }
 
-    func cancel() {
-        stateLock.withLock { cancelled = true }
-        packetSignal.signal()
+    func stop() {
+        timer.setEventHandler {}
+        timer.cancel()
     }
 
-    func notifyPacketArrival() {
-        packetSignal.signal()
-    }
+    private func tick() {
+        // Top the ring up to ~30 ms ahead of the render thread, producing only
+        // when below target: a scheduling hiccup is refilled in one tick, and
+        // clock drift against the output device self-corrects by skipping.
+        let targetSamples = targetBufferedFrames * frameLength
+        let buffered = playback.bufferedSampleCount
+        guard buffered < targetSamples else { return }
+        let deficitFrames = (targetSamples - buffered + frameLength - 1) / frameLength
+        let framesToProduce = min(deficitFrames, targetBufferedFrames + 1)
 
-    private func drain() {
-        var sampleReads: UInt64 = 0
-        AudioDiagnostics.shared.record("drain.start session=\(session)")
-        while !stateLock.withLock({ cancelled }) {
-            packetSignal.wait()
-            while !stateLock.withLock({ cancelled }) {
-                do {
-                    switch try pipeline.read() {
-                    case .waiting:
-                        break
-                    case .samples(let samples):
-                        sampleReads &+= 1
-                        if sampleReads == 1 || sampleReads.isMultiple(of: 100) {
-                            AudioDiagnostics.shared.record("drain.samples session=\(session) count=\(sampleReads)")
-                        }
-                        mixer.push(source: session, samples: samples)
-                        continue
-                    case .finished:
-                        AudioDiagnostics.shared.record("drain.terminator session=\(session) samples=\(sampleReads)")
-                        continue
-                    }
-                } catch {
-                    AudioDiagnostics.shared.record("drain.error session=\(session) error=\(error.localizedDescription)")
-                }
-                break
+        let sources = snapshot()
+        for _ in 0..<framesToProduce {
+            mixer.beginFrame()
+            var active = 0
+            for (session, pipeline) in sources where pipeline.pull(into: sourceScratch) {
+                mixer.accumulate(source: session, samples: sourceScratch)
+                active += 1
             }
+            // Only feed the ring while someone is talking; otherwise let it
+            // drain naturally so resumed speech starts with zero queued latency.
+            guard active > 0 else { return }
+            mixer.finalizeFrame(into: mixScratch)
+            referenceSink?.tryUpdatePlaybackReference(pointer: mixScratch, count: frameLength)
+            playback.enqueue(samples: mixScratch, count: frameLength)
         }
-        AudioDiagnostics.shared.record("drain.cancelled session=\(session) samples=\(sampleReads)")
     }
 }
 

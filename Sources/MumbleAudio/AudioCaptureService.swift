@@ -13,7 +13,7 @@ public enum AudioCaptureError: Error {
     case coreAudio(OSStatus)
 }
 
-public final class AudioCaptureService: @unchecked Sendable {
+public final class AudioCaptureService: AudioCaptureBackend, @unchecked Sendable {
     public typealias FrameHandler = @Sendable ([Float]) -> Void
 
     private let lock = NSLock()
@@ -65,7 +65,7 @@ public final class AudioCaptureService: @unchecked Sendable {
 
         try configurationLock.withLock {
             stopUnlocked()
-            self.frameHandler = frameHandler
+            lock.withLock { self.frameHandler = frameHandler }
             do {
                 try prepareUnlocked()
                 guard let unit = audioUnit else { throw AudioCaptureError.audioComponentUnavailable }
@@ -76,7 +76,7 @@ public final class AudioCaptureService: @unchecked Sendable {
                 audioCaptureLogger.notice("AUHAL input started in \(String(describing: duration), privacy: .public)")
                 AudioDiagnostics.shared.record("capture.start duration=\(duration)")
             } catch {
-                self.frameHandler = nil
+                lock.withLock { self.frameHandler = nil }
                 throw error
             }
         }
@@ -102,14 +102,14 @@ public final class AudioCaptureService: @unchecked Sendable {
             componentFlagsMask: 0
         )
         guard let component = AudioComponentFindNext(nil, &description) else {
-            self.frameHandler = nil
+            lock.withLock { self.frameHandler = nil }
             throw AudioCaptureError.audioComponentUnavailable
         }
 
         var unit: AudioUnit?
         try Self.check(AudioComponentInstanceNew(component, &unit))
         guard let unit else {
-            self.frameHandler = nil
+            lock.withLock { self.frameHandler = nil }
             throw AudioCaptureError.audioComponentUnavailable
         }
 
@@ -197,8 +197,13 @@ public final class AudioCaptureService: @unchecked Sendable {
         }
         isRunning = false
         AudioDiagnostics.shared.record("capture.stop callbacks=\(callbackCount) delivered=\(deliveredFrameCount)")
-        lock.withLock { accumulator.reset() }
-        frameHandler = nil
+        // `frameHandler` and `accumulator` are both touched on the realtime
+        // capture thread, so clear them under the same lightweight lock the
+        // callback uses rather than relying on `configurationLock` alone.
+        lock.withLock {
+            accumulator.reset()
+            frameHandler = nil
+        }
     }
 
     public func shutdown() {
@@ -233,17 +238,14 @@ public final class AudioCaptureService: @unchecked Sendable {
         callbackCount &+= 1
 
         let samples = Array(UnsafeBufferPointer(start: sampleStorage, count: Int(frameCount)))
-        let frames = lock.withLock { accumulator.append(samples) }
+        // Snapshot the handler under the same lock that guards the accumulator so
+        // a concurrent start/stop can't release the closure's context mid-call
+        // (an ARC refcount race that could otherwise use-after-free).
+        let (frames, handler) = lock.withLock { (accumulator.append(samples), frameHandler) }
+        guard let handler else { return noErr }
         for frame in frames {
             deliveredFrameCount &+= 1
-            frameHandler?(frame)
-        }
-        if callbackCount == 1 || callbackCount.isMultiple(of: 100) {
-            let callbacks = callbackCount
-            let delivered = deliveredFrameCount
-            AudioDiagnostics.shared.record(
-                "capture.callback count=\(callbacks) delivered=\(delivered) frames=\(frameCount)"
-            )
+            handler(frame)
         }
         return noErr
     }

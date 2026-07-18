@@ -141,7 +141,18 @@ struct SettingsView: View {
                     L10n.text("settings.echoCancellation"),
                     isOn: Binding(get: { session.echoCancellationEnabled }, set: { session.setEchoCancellationEnabled($0) })
                 )
+                .disabled(session.voiceProcessingEnabled)
                 Text(L10n.text("settings.noiseSuppression.help"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Toggle(
+                    L10n.text("settings.voiceProcessing"),
+                    isOn: Binding(
+                        get: { session.voiceProcessingEnabled },
+                        set: { session.setVoiceProcessingEnabled($0) }
+                    )
+                )
+                Text(L10n.text("settings.voiceProcessing.help"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 DisclosureGroup(L10n.text("settings.opus.title")) {
@@ -526,9 +537,9 @@ struct SettingsView: View {
                 .foregroundStyle(.secondary)
             LabeledContent(L10n.text("settings.chatLogLimit")) {
                 Stepper(
-                    "\(session.chatLogLimit)",
+                    "\(session.chat.logLimit)",
                     value: Binding(
-                        get: { session.chatLogLimit },
+                        get: { session.chat.logLimit },
                         set: { session.setChatLogLimit($0) }
                     ),
                     in: 50 ... 5_000,
@@ -538,7 +549,7 @@ struct SettingsView: View {
             Toggle(
                 L10n.text("settings.chat24Hour"),
                 isOn: Binding(
-                    get: { session.chatUses24HourTime },
+                    get: { session.chat.uses24HourTime },
                     set: { session.setChatUses24HourTime($0) }
                 )
             )
@@ -584,26 +595,25 @@ struct SettingsView: View {
             Toggle(
                 L10n.text("settings.globalPushToTalk"),
                 isOn: Binding(
-                    get: { session.isGlobalPushToTalkEnabled },
+                    get: { session.shortcuts.isPushToTalkEnabled },
                     set: { session.setGlobalPushToTalkEnabled($0) }
                 )
             )
             .disabled(session.transmissionMode != .pushToTalk)
             LabeledContent(L10n.text("settings.globalShortcut")) {
                 ShortcutRecorderView(
-                    shortcut: session.globalPushToTalkShortcut,
-                    onRecordingChanged: session.setRecordingGlobalShortcut,
+                    shortcut: session.shortcuts.pushToTalkShortcut,
                     onChange: session.setGlobalPushToTalkShortcut
                 )
             }
             .disabled(session.transmissionMode != .pushToTalk)
             Text(L10n.text(
                 "settings.globalPushToTalk.help",
-                session.globalPushToTalkShortcut.displayName
+                session.shortcuts.pushToTalkShortcut.displayName
             ))
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            if let shortcutError = session.globalPushToTalkError {
+            if let shortcutError = session.shortcuts.errorMessage {
                 Text(shortcutError)
                     .font(.caption)
                     .foregroundStyle(.red)
@@ -611,51 +621,48 @@ struct SettingsView: View {
             Toggle(
                 L10n.text("settings.pushToMute"),
                 isOn: Binding(
-                    get: { session.isPushToMuteEnabled },
+                    get: { session.shortcuts.isPushToMuteEnabled },
                     set: { session.setPushToMuteEnabled($0) }
                 )
             )
             LabeledContent(L10n.text("settings.pushToMuteShortcut")) {
                 ShortcutRecorderView(
-                    shortcut: session.pushToMuteShortcut,
-                    onRecordingChanged: session.setRecordingPushToMuteShortcut,
+                    shortcut: session.shortcuts.pushToMuteShortcut,
                     onChange: session.setPushToMuteShortcut
                 )
             }
-            .disabled(!session.isPushToMuteEnabled)
+            .disabled(!session.shortcuts.isPushToMuteEnabled)
             Toggle(
                 L10n.text("settings.globalAudioShortcuts"),
                 isOn: Binding(
-                    get: { session.areGlobalAudioShortcutsEnabled },
+                    get: { session.shortcuts.areAudioShortcutsEnabled },
                     set: { session.setGlobalAudioShortcutsEnabled($0) }
                 )
             )
             ForEach(GlobalAudioShortcutAction.allCases) { action in
                 LabeledContent(L10n.text("settings.shortcut.\(action.rawValue)")) {
                     ShortcutRecorderView(
-                        shortcut: session.globalAudioShortcuts[action] ?? .default,
-                        onRecordingChanged: session.setRecordingGlobalAudioShortcut,
+                        shortcut: session.shortcuts.audioShortcuts[action] ?? .default,
                         onChange: { session.setGlobalAudioShortcut($0, for: action) }
                     )
                 }
-                .disabled(!session.areGlobalAudioShortcutsEnabled)
+                .disabled(!session.shortcuts.areAudioShortcutsEnabled)
             }
             Toggle(
                 L10n.text("settings.whisperShortcut"),
                 isOn: Binding(
-                    get: { session.isWhisperShortcutEnabled },
+                    get: { session.shortcuts.isWhisperEnabled },
                     set: { session.setWhisperShortcutEnabled($0) }
                 )
             )
             LabeledContent(L10n.text("settings.whisperKey")) {
                 ShortcutRecorderView(
-                    shortcut: session.whisperShortcut,
-                    onRecordingChanged: session.setRecordingWhisperShortcut,
+                    shortcut: session.shortcuts.whisperShortcut,
                     onChange: session.setWhisperShortcut
                 )
             }
-            .disabled(!session.isWhisperShortcutEnabled)
-            if let target = session.configuredVoiceTarget {
+            .disabled(!session.shortcuts.isWhisperEnabled)
+            if let target = session.shortcuts.voiceTarget {
                 LabeledContent(L10n.text("settings.whisperTarget"), value: voiceTargetName(target))
                 Button(L10n.text("settings.whisperClear"), role: .destructive) {
                     session.clearWhisperTarget()
@@ -666,19 +673,19 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
             Picker(L10n.text("settings.idleAction"), selection: Binding(
-                get: { session.idleAudioAction },
+                get: { session.shortcuts.idleAction },
                 set: { session.setIdleAudioAction($0) }
             )) {
                 Text(L10n.text("settings.idle.none")).tag(IdleAudioAction.none)
                 Text(L10n.text("settings.idle.mute")).tag(IdleAudioAction.mute)
                 Text(L10n.text("settings.idle.deafen")).tag(IdleAudioAction.deafen)
             }
-            if session.idleAudioAction != .none {
+            if session.shortcuts.idleAction != .none {
                 LabeledContent(L10n.text("settings.idleTimeout")) {
                     Stepper(
-                        L10n.text("settings.minutes", session.idleTimeoutMinutes),
+                        L10n.text("settings.minutes", session.shortcuts.idleTimeoutMinutes),
                         value: Binding(
-                            get: { session.idleTimeoutMinutes },
+                            get: { session.shortcuts.idleTimeoutMinutes },
                             set: { session.setIdleTimeoutMinutes($0) }
                         ),
                         in: 1 ... 240

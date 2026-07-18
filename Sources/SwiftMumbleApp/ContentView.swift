@@ -19,13 +19,22 @@ struct ContentView: View {
         .navigationSplitViewStyle(.balanced)
         .background(WindowBackdrop())
         .safeAreaInset(edge: .top, spacing: 0) {
-            if session.isReconnecting {
-                ReconnectingBanner()
-                    .environment(session)
+            VStack(spacing: 0) {
+                if session.isReconnecting {
+                    ReconnectingBanner()
+                        .environment(session)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
+                if let audioError = session.audioErrorMessage {
+                    AudioErrorBanner(message: audioError) {
+                        session.audioErrorMessage = nil
+                    }
                     .transition(.move(edge: .top).combined(with: .opacity))
+                }
             }
         }
         .animation(.snappy, value: session.isReconnecting)
+        .animation(.snappy, value: session.audioErrorMessage)
         .toolbar {
             if session.showsReturnToPreviousChannelControl {
                 ToolbarItem(placement: .navigation) {
@@ -117,6 +126,45 @@ struct ContentView: View {
     }
 }
 
+private struct AudioErrorBanner: View {
+    let message: String
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "speaker.badge.exclamationmark")
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(.red)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(L10n.text("audio.banner.title"))
+                    .font(.headline)
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+
+            Spacer(minLength: 12)
+
+            Button {
+                onDismiss()
+            } label: {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(.borderless)
+            .help(L10n.text("common.close"))
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(.red.opacity(0.1))
+        .overlay(alignment: .bottom) {
+            Divider()
+        }
+        .accessibilityElement(children: .combine)
+    }
+}
+
 private struct ReconnectingBanner: View {
     @Environment(SessionStore.self) private var session
 
@@ -133,7 +181,7 @@ private struct ReconnectingBanner: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(session.connectionLabel)
                     .font(.headline)
-                if let server = session.selectedServer {
+                if let server = session.activeServer ?? session.selectedServer {
                     Text("\(server.name)  \(server.host):\(server.port)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -168,7 +216,12 @@ private struct CertificateTrustView: View {
                 .font(.title2.weight(.semibold))
                 .foregroundStyle(.tint)
 
-            Text(L10n.text("certificate.verify.message", certificate.host))
+            Text(L10n.text(
+                certificate.previousFingerprint == nil
+                    ? "certificate.verify.message"
+                    : "certificate.mismatch.message",
+                certificate.host
+            ))
                 .fixedSize(horizontal: false, vertical: true)
 
             Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 10) {
@@ -183,6 +236,15 @@ private struct CertificateTrustView: View {
                     Text(certificate.fingerprint.formatted)
                         .font(.caption.monospaced())
                         .textSelection(.enabled)
+                }
+                if let previousFingerprint = certificate.previousFingerprint {
+                    GridRow(alignment: .top) {
+                        Text(L10n.text("certificate.previousFingerprint"))
+                            .foregroundStyle(.secondary)
+                        Text(previousFingerprint.formatted)
+                            .font(.caption.monospaced())
+                            .textSelection(.enabled)
+                    }
                 }
             }
             .padding(14)
@@ -208,23 +270,27 @@ private struct PushToTalkButton: View {
     @Environment(SessionStore.self) private var session
 
     var body: some View {
-        Label(L10n.text("audio.pushToTalk"), systemImage: session.isTransmitting ? "waveform" : "mic.badge.plus")
+        Button(action: {}) {
+            Label(
+                L10n.text("audio.pushToTalk"),
+                systemImage: session.isTransmitting ? "waveform" : "mic.badge.plus"
+            )
             .symbolEffect(.variableColor.iterative, isActive: session.isTransmitting)
             .foregroundStyle(session.isTransmitting ? Color.green : .primary)
             .padding(.horizontal, 9)
             .padding(.vertical, 5)
             .contentShape(.rect)
             .nativeGlass(in: Capsule())
-            .opacity(isEnabled ? 1 : 0.45)
-            .overlay {
-                PressAndHoldEventView(
-                    isEnabled: isEnabled,
-                    onPressed: session.beginTransmission,
-                    onReleased: session.releasePushToTalk
-                )
-            }
+        }
+            .buttonStyle(PressAndHoldButtonStyle(
+                onPressed: session.beginTransmission,
+                onReleased: session.releasePushToTalk
+            ))
+            .disabled(!isEnabled)
             .help(session.audioErrorMessage ?? L10n.text("audio.pushToTalk.help"))
-            .accessibilityAddTraits(.isButton)
+            .accessibilityAction {
+                session.toggleLatchedPushToTalk()
+            }
     }
 
     private var isEnabled: Bool {
@@ -236,60 +302,41 @@ private struct PushToTalkButton: View {
     }
 }
 
-private struct PressAndHoldEventView: NSViewRepresentable {
-    var isEnabled: Bool
+private struct PressAndHoldButtonStyle: ButtonStyle {
     var onPressed: () -> Void
     var onReleased: () -> Void
 
-    func makeNSView(context: Context) -> PressAndHoldNSView {
-        PressAndHoldNSView()
+    func makeBody(configuration: Configuration) -> some View {
+        PressAndHoldButtonBody(
+            label: AnyView(configuration.label),
+            isPressed: configuration.isPressed,
+            onPressed: onPressed,
+            onReleased: onReleased
+        )
     }
 
-    func updateNSView(_ view: PressAndHoldNSView, context: Context) {
-        view.isEnabled = isEnabled
-        view.onPressed = onPressed
-        view.onReleased = onReleased
-    }
-}
+    private struct PressAndHoldButtonBody: View {
+        let label: AnyView
+        let isPressed: Bool
+        let onPressed: () -> Void
+        let onReleased: () -> Void
+        @State private var isHandlingPress = false
 
-private final class PressAndHoldNSView: NSView {
-    var isEnabled = true
-    var onPressed: (() -> Void)?
-    var onReleased: (() -> Void)?
-    private var isPressed = false
-
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        let recognizer = NSPressGestureRecognizer(target: self, action: #selector(handlePress(_:)))
-        recognizer.minimumPressDuration = 0
-        addGestureRecognizer(recognizer)
-    }
-
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-
-    @objc private func handlePress(_ recognizer: NSPressGestureRecognizer) {
-        guard isEnabled else {
-            releaseIfNeeded()
-            return
+        var body: some View {
+            label
+                .opacity(isPressed ? 0.78 : 1)
+                .onChange(of: isPressed) { _, newValue in
+                    guard newValue != isHandlingPress else { return }
+                    isHandlingPress = newValue
+                    if newValue { onPressed() }
+                    else { onReleased() }
+                }
+                .onDisappear {
+                    guard isHandlingPress else { return }
+                    isHandlingPress = false
+                    onReleased()
+                }
         }
-        switch recognizer.state {
-        case .began:
-            guard !isPressed else { return }
-            isPressed = true
-            onPressed?()
-        case .ended, .cancelled, .failed:
-            releaseIfNeeded()
-        default:
-            break
-        }
-    }
-
-    private func releaseIfNeeded() {
-        guard isPressed else { return }
-        isPressed = false
-        onReleased?()
     }
 }
 

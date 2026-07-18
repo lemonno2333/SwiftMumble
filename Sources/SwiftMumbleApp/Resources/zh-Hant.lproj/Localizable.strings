@@ -76,6 +76,7 @@
 "chat.you" = "你";
 "chat.server" = "伺服器";
 "chat.sendError" = "無法傳送訊息：%@";
+"chat.notConnected" = "請等待伺服器連線完成後再傳送訊息。";
 "people.one" = "1 人";
 "people.many" = "%lld 人";
 "connection.disconnected" = "未連線";
@@ -187,8 +188,11 @@
 "certificate.title" = "憑證";
 "certificate.fingerprint" = "固定的 SHA-256 指紋";
 "certificate.fingerprint.help" = "選填。請輸入伺服器憑證的 64 位 SHA-256 指紋。";
+"certificate.fingerprint.invalid" = "請輸入有效的 64 位 SHA-256 指紋，或將此欄位留空。";
 "certificate.verify.title" = "驗證伺服器憑證";
 "certificate.verify.message" = "macOS 不信任 %@ 的憑證。繼續前請核對其指紋。";
+"certificate.mismatch.message" = "%@ 的伺服器憑證已變更。取代已儲存憑證前，請核對舊指紋與新指紋。";
+"certificate.previousFingerprint" = "舊 SHA-256";
 "certificate.subject" = "主體";
 "certificate.trustReconnect" = "信任並重新連線";
 "certificate.confirmRequired" = "需要確認憑證";
@@ -396,3 +400,19 @@
 "settings.connection" = "連線";
 "settings.interface" = "介面";
 "settings.shortcuts" = "快速鍵";
+
+/* Unread & mentions */
+"chat.unreadDivider" = "以下為新訊息";
+"chat.mentionsYou" = "提到了你";
+"notifications.mention.title" = "%@ 提到了你";
+
+/* Audio error banner */
+"audio.banner.title" = "音訊異常";
+
+/* Dead connection */
+"connection.timedOut" = "伺服器停止回應";
+
+/* Voice processing backend */
+"settings.voiceProcessing" = "系統語音處理（實驗性）";
+"settings.voiceProcessing.help" = "使用 macOS 系統語音處理（單一全雙工音訊單元）提供回音消除與增益控制。連線期間麥克風保持開啟，輸入裝置跟隨系統預設。";
+"settings.voiceProcessing.restartRequired" = "系統語音處理將在下次啟動 SwiftMumble 時生效。";

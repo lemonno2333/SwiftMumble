@@ -8,6 +8,11 @@ public struct MumbleCertificateFingerprint: Equatable, Hashable, Sendable {
         bytes = Data(SHA256.hash(data: certificateDER))
     }
 
+    public init?(bytes: Data) {
+        guard bytes.count == 32 else { return nil }
+        self.bytes = bytes
+    }
+
     public init?(hex: String) {
         let normalized = hex
             .lowercased()
@@ -37,5 +42,25 @@ public struct MumbleCertificateFingerprint: Equatable, Hashable, Sendable {
                 return String(hex[start..<end])
             }
             .joined(separator: ":")
+    }
+}
+
+public enum MumbleCertificatePinEvaluation: Equatable, Sendable {
+    case notPinned
+    case match
+    case mismatch(expected: MumbleCertificateFingerprint, actual: MumbleCertificateFingerprint)
+    case invalidPinnedFingerprint
+}
+
+public enum MumbleCertificatePinEvaluator {
+    public static func evaluate(
+        actual: MumbleCertificateFingerprint,
+        pinnedSHA256: Data?
+    ) -> MumbleCertificatePinEvaluation {
+        guard let pinnedSHA256 else { return .notPinned }
+        guard let expected = MumbleCertificateFingerprint(bytes: pinnedSHA256) else {
+            return .invalidPinnedFingerprint
+        }
+        return expected == actual ? .match : .mismatch(expected: expected, actual: actual)
     }
 }

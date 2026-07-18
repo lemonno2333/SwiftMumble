@@ -8,6 +8,11 @@ public enum MumbleConnectionEvent: Sendable {
     case frame(MumbleFrame)
     case waiting(message: String)
     case untrustedCertificate(subject: String, fingerprint: MumbleCertificateFingerprint)
+    case certificateMismatch(
+        subject: String,
+        expected: MumbleCertificateFingerprint,
+        actual: MumbleCertificateFingerprint
+    )
     case failed(message: String)
     case disconnected
 }
@@ -76,17 +81,32 @@ public actor MumbleControlConnection {
                 }
                 let certificateData = SecCertificateCopyData(certificate) as Data
                 let fingerprint = MumbleCertificateFingerprint(certificateDER: certificateData)
+                let subject = SecCertificateCopySubjectSummary(certificate) as String? ?? "Unknown certificate"
 
-                if let pinnedCertificateSHA256 {
-                    completion(fingerprint.bytes == pinnedCertificateSHA256)
+                switch MumbleCertificatePinEvaluator.evaluate(
+                    actual: fingerprint,
+                    pinnedSHA256: pinnedCertificateSHA256
+                ) {
+                case .match:
+                    completion(true)
                     return
+                case .mismatch(let expected, let actual):
+                    eventContinuation.yield(
+                        .certificateMismatch(subject: subject, expected: expected, actual: actual)
+                    )
+                    completion(false)
+                    return
+                case .invalidPinnedFingerprint:
+                    completion(false)
+                    return
+                case .notPinned:
+                    break
                 }
 
                 var trustError: CFError?
                 if SecTrustEvaluateWithError(secTrust, &trustError) {
                     completion(true)
                 } else {
-                    let subject = SecCertificateCopySubjectSummary(certificate) as String? ?? "Unknown certificate"
                     eventContinuation.yield(
                         .untrustedCertificate(subject: subject, fingerprint: fingerprint)
                     )
@@ -98,6 +118,11 @@ public actor MumbleControlConnection {
         let tcpOptions = NWProtocolTCP.Options()
         tcpOptions.noDelay = true
         tcpOptions.connectionTimeout = Int(min(120, max(5, connectionTimeoutSeconds)))
+        // Home NAT/Wi-Fi idle timeouts drop the control socket before app-level ping notices.
+        tcpOptions.enableKeepalive = true
+        tcpOptions.keepaliveIdle = 15
+        tcpOptions.keepaliveInterval = 5
+        tcpOptions.keepaliveCount = 3
         let parameters = NWParameters(tls: tlsOptions, tcp: tcpOptions)
         parameters.serviceClass = .interactiveVoice
         if proxy.type != .none, !proxy.host.isEmpty,

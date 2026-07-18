@@ -120,7 +120,7 @@ public final class MumbleCryptState: @unchecked Sendable {
                 nonce: decryptNonce,
                 key: key
             )
-            guard Array(result.tag.prefix(3)) == Array(bytes[1...3]) else {
+            guard result.ocbSuccess, Array(result.tag.prefix(3)) == Array(bytes[1...3]) else {
                 decryptNonce = savedNonce
                 return nil
             }
@@ -220,7 +220,7 @@ enum MumbleOCB2 {
         ciphertext: [UInt8],
         nonce: [UInt8],
         key: [UInt8]
-    ) throws -> (plaintext: [UInt8], tag: [UInt8]) {
+    ) throws -> (plaintext: [UInt8], tag: [UInt8], ocbSuccess: Bool) {
         var delta = try aes(.encrypt, block: nonce, key: key)
         var checksum = zeroBlock
         var plaintext = [UInt8](repeating: 0, count: ciphertext.count)
@@ -250,9 +250,16 @@ enum MumbleOCB2 {
         }
         checksum = xor(checksum, temporary)
 
+        // Counter-cryptanalysis rejection (upstream ocb_decrypt, eprint 2019/311
+        // §9): a forged packet whose final block decrypts to `delta` (over the
+        // first 15 bytes) must be rejected, not accepted, even if the truncated
+        // 3-byte tag happens to collide. `temporary` here is upstream's `tmp`
+        // and `delta` is post-double / pre-triple, matching the reference check.
+        let ocbSuccess = !zip(temporary.prefix(15), delta.prefix(15)).allSatisfy { $0 == $1 }
+
         triple(&delta)
         let tag = try aes(.encrypt, block: xor(delta, checksum), key: key)
-        return (plaintext, tag)
+        return (plaintext, tag, ocbSuccess)
     }
 
     private enum AESOperation {

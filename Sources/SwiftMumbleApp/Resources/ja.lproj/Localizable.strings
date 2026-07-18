@@ -76,6 +76,7 @@
 "chat.you" = "自分";
 "chat.server" = "サーバー";
 "chat.sendError" = "メッセージを送信できませんでした：%@";
+"chat.notConnected" = "サーバー接続が完了してからメッセージを送信してください。";
 "people.one" = "1 人";
 "people.many" = "%lld 人";
 "connection.disconnected" = "未接続";
@@ -187,8 +188,11 @@
 "certificate.title" = "証明書";
 "certificate.fingerprint" = "固定 SHA-256 フィンガープリント";
 "certificate.fingerprint.help" = "任意。サーバー証明書の 64 桁の SHA-256 フィンガープリントを入力します。";
+"certificate.fingerprint.invalid" = "有効な 64 桁の SHA-256 フィンガープリントを入力するか、空欄にしてください。";
 "certificate.verify.title" = "サーバー証明書を確認";
 "certificate.verify.message" = "%@ の証明書は macOS に信頼されていません。続行する前にフィンガープリントを確認してください。";
+"certificate.mismatch.message" = "%@ のサーバー証明書が変更されました。保存済み証明書を置き換える前に、新旧のフィンガープリントを確認してください。";
+"certificate.previousFingerprint" = "以前の SHA-256";
 "certificate.subject" = "サブジェクト";
 "certificate.trustReconnect" = "信頼して再接続";
 "certificate.confirmRequired" = "証明書の確認が必要です";
@@ -396,3 +400,19 @@
 "settings.connection" = "接続";
 "settings.interface" = "インターフェース";
 "settings.shortcuts" = "ショートカット";
+
+/* Unread & mentions */
+"chat.unreadDivider" = "ここから新着メッセージ";
+"chat.mentionsYou" = "あなた宛てのメンション";
+"notifications.mention.title" = "%@ さんがあなたをメンションしました";
+
+/* Audio error banner */
+"audio.banner.title" = "オーディオの問題";
+
+/* Dead connection */
+"connection.timedOut" = "サーバーが応答しなくなりました";
+
+/* Voice processing backend */
+"settings.voiceProcessing" = "システム音声処理（実験的）";
+"settings.voiceProcessing.help" = "macOS のシステム音声処理（単一の全二重オーディオユニット）でエコーキャンセルとゲイン制御を行います。接続中はマイクが開いたままになり、入力デバイスはシステムのデフォルトに従います。";
+"settings.voiceProcessing.restartRequired" = "システム音声処理は次回 SwiftMumble を起動したときに有効になります。";
