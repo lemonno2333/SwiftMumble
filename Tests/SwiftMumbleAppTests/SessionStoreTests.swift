@@ -42,3 +42,26 @@ import Testing
     #expect(session.chat.draft == "message to keep")
     #expect(session.serverManagementError != nil)
 }
+
+@MainActor
+@Test func sessionUsesServerPermissionsAndRecognizesSuperUser() {
+    let regularUser = MumbleUser(id: 1, name: "Member", channelID: 0)
+    let session = SessionStore(
+        channels: [MumbleChannel(id: 0, name: "Root", users: [regularUser])],
+        connectionState: .connected(session: regularUser.id),
+        performStartup: false
+    )
+    session.currentPermissions = [.muteDeafen]
+
+    #expect(!session.isServerOwner)
+    #expect(session.hasPermission(.muteDeafen))
+    #expect(!session.hasPermission(.ban))
+
+    let owner = MumbleUser(id: 2, name: "SuperUser", channelID: 0)
+    session.channels = [MumbleChannel(id: 0, name: "Root", users: [owner])]
+    session.connectionState = .connected(session: owner.id)
+    session.currentPermissions = []
+
+    #expect(session.isServerOwner)
+    #expect(session.hasPermission(.ban))
+}

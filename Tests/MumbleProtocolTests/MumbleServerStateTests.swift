@@ -28,12 +28,14 @@ import Testing
     var sync = MumbleProto_ServerSync()
     sync.session = 42
     sync.welcomeText = "Welcome"
+    sync.permissions = UInt64(MumblePermission.write.rawValue | MumblePermission.kick.rawValue)
     let change = try state.apply(MumbleFrame(type: .serverSync, message: sync))
 
     let snapshot = state.snapshot()
     #expect(change == .synchronized(session: 42))
     #expect(snapshot.session == 42)
     #expect(snapshot.welcomeText == "Welcome")
+    #expect(snapshot.permissions == [.write, .kick])
     #expect(snapshot.channels.first?.name == "Root")
     #expect(snapshot.channels.first?.children.first?.name == "Lounge")
     #expect(snapshot.channels.first?.children.first?.users.first?.name == "Leo")

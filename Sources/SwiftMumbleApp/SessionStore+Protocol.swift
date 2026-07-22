@@ -199,6 +199,7 @@ extension SessionStore {
             }
             channelSnapshot = snapshot.channels
             rebuildChannels()
+            currentPermissions = snapshot.permissions ?? []
             let isSynchronize: Bool
             if case .synchronized = change { isSynchronize = true } else { isSynchronize = false }
             if isSynchronize { applyChannelExpansionPolicy() }

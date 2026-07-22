@@ -70,6 +70,7 @@
 "channel.listeningVolume" = "监听音量";
 "channel.links" = "链接频道";
 "permission.denied" = "服务器拒绝了此操作。";
+"owner.badge" = "服务器房主（SuperUser）";
 "chat.title" = "对话";
 "chat.placeholder" = "发送消息到频道";
 "chat.send" = "发送消息";

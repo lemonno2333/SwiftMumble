@@ -3,11 +3,18 @@ import Foundation
 public struct MumbleStateSnapshot: Equatable, Sendable {
     public var session: UInt32?
     public var welcomeText: String
+    public var permissions: MumblePermission?
     public var channels: [MumbleChannel]
 
-    public init(session: UInt32? = nil, welcomeText: String = "", channels: [MumbleChannel] = []) {
+    public init(
+        session: UInt32? = nil,
+        welcomeText: String = "",
+        permissions: MumblePermission? = nil,
+        channels: [MumbleChannel] = []
+    ) {
         self.session = session
         self.welcomeText = welcomeText
+        self.permissions = permissions
         self.channels = channels
     }
 }
@@ -55,6 +62,7 @@ public struct MumbleServerState: Sendable {
     private var users: [UInt32: UserRecord] = [:]
     private var session: UInt32?
     private var welcomeText = ""
+    private var permissions: MumblePermission?
 
     public init() {}
 
@@ -68,6 +76,9 @@ public struct MumbleServerState: Sendable {
             }
             if message.hasWelcomeText {
                 welcomeText = message.welcomeText
+            }
+            if message.hasPermissions {
+                permissions = MumblePermission(rawValue: UInt32(truncatingIfNeeded: message.permissions))
             }
             return session.map(MumbleStateChange.synchronized)
 
@@ -180,6 +191,7 @@ public struct MumbleServerState: Sendable {
         return MumbleStateSnapshot(
             session: session,
             welcomeText: welcomeText,
+            permissions: permissions,
             channels: roots
         )
     }

@@ -70,6 +70,7 @@
 "channel.listeningVolume" = "リッスン音量";
 "channel.links" = "リンク済みチャンネル";
 "permission.denied" = "サーバーがこの操作を拒否しました。";
+"owner.badge" = "サーバー所有者（SuperUser）";
 "chat.title" = "会話";
 "chat.placeholder" = "チャンネルにメッセージ";
 "chat.send" = "メッセージを送信";

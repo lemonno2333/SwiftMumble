@@ -12,6 +12,23 @@ extension SessionStore {
         serverRepository.activeServer
     }
 
+    var ownUser: MumbleUser? {
+        guard case .connected(let sessionID) = connectionState else { return nil }
+        return findUser(session: sessionID, in: channels)
+    }
+
+    var isServerOwner: Bool {
+        ownUser?.isSuperUser == true
+    }
+
+    func hasPermission(_ permission: MumblePermission) -> Bool {
+        isServerOwner || currentPermissions.contains(permission)
+    }
+
+    var hasUserManagementPermission: Bool {
+        [.write, .muteDeafen, .kick, .ban].contains(where: hasPermission)
+    }
+
     func selectServer(_ server: MumbleServer) {
         if serverRepository.select(server.id) { selectedServerDidChange() }
     }

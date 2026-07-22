@@ -137,11 +137,13 @@ private struct ChannelNode: View {
         guard let payload = items.first else { return false }
         let parts = payload.split(separator: ":", maxSplits: 1)
         guard parts.count == 2, let id = UInt32(parts[1]) else { return false }
-        if parts[0] == "user", let user = session.flattenedChannels.flatMap(\.users).first(where: { $0.id == id }) {
+        if parts[0] == "user", session.hasPermission(.move),
+           let user = session.flattenedChannels.flatMap(\.users).first(where: { $0.id == id }) {
             session.moveUser(user, to: channel)
             return true
         }
-        if parts[0] == "channel", let source = session.flattenedChannels.first(where: { $0.id == id }) {
+        if parts[0] == "channel", session.hasPermission(.write),
+           let source = session.flattenedChannels.first(where: { $0.id == id }) {
             session.moveChannel(source, to: channel)
             return true
         }
@@ -155,50 +157,58 @@ private struct ChannelNode: View {
 
     @ViewBuilder
     private var channelMenu: some View {
-        Button(L10n.text("channel.createSubchannel"), systemImage: "plus") {
-            session.channelEditorRequest = ChannelEditorRequest(channel: nil, parentID: channel.id)
+        if session.hasPermission(.makeChannel) || session.hasPermission(.makeTemporaryChannel) {
+            Button(L10n.text("channel.createSubchannel"), systemImage: "plus") {
+                session.channelEditorRequest = ChannelEditorRequest(channel: nil, parentID: channel.id)
+            }
         }
-        Button(L10n.text("channel.edit"), systemImage: "pencil") {
-            session.channelEditorRequest = ChannelEditorRequest(
-                channel: channel,
-                parentID: channel.parentID ?? channel.id
-            )
+        if session.hasPermission(.write) {
+            Button(L10n.text("channel.edit"), systemImage: "pencil") {
+                session.channelEditorRequest = ChannelEditorRequest(
+                    channel: channel,
+                    parentID: channel.parentID ?? channel.id
+                )
+            }
         }
-        Button(
-            session.listeningChannelIDs.contains(channel.id)
-                ? L10n.text("channel.stopListening")
-                : L10n.text("channel.listen"),
-            systemImage: session.listeningChannelIDs.contains(channel.id)
-                ? "ear.badge.minus"
-                : "ear.badge.plus"
-        ) {
-            session.setChannelListening(
-                channel,
-                listening: !session.listeningChannelIDs.contains(channel.id)
-            )
-        }
-        Menu(L10n.text("channel.listeningVolume")) {
-            ForEach([Float(0.5), 0.75, 1, 1.25, 1.5, 2], id: \.self) { volume in
-                Button {
-                    session.setListeningVolume(volume, for: channel)
-                } label: {
-                    if session.listeningChannelVolumes[channel.id, default: 1] == volume {
-                        Label(percentLabel(volume), systemImage: "checkmark")
-                    } else {
-                        Text(percentLabel(volume))
+        if session.hasPermission(.listen) {
+            Button(
+                session.listeningChannelIDs.contains(channel.id)
+                    ? L10n.text("channel.stopListening")
+                    : L10n.text("channel.listen"),
+                systemImage: session.listeningChannelIDs.contains(channel.id)
+                    ? "ear.badge.minus"
+                    : "ear.badge.plus"
+            ) {
+                session.setChannelListening(
+                    channel,
+                    listening: !session.listeningChannelIDs.contains(channel.id)
+                )
+            }
+            Menu(L10n.text("channel.listeningVolume")) {
+                ForEach([Float(0.5), 0.75, 1, 1.25, 1.5, 2], id: \.self) { volume in
+                    Button {
+                        session.setListeningVolume(volume, for: channel)
+                    } label: {
+                        if session.listeningChannelVolumes[channel.id, default: 1] == volume {
+                            Label(percentLabel(volume), systemImage: "checkmark")
+                        } else {
+                            Text(percentLabel(volume))
+                        }
                     }
                 }
             }
+            .disabled(!session.listeningChannelIDs.contains(channel.id))
         }
-        .disabled(!session.listeningChannelIDs.contains(channel.id))
-        Menu(L10n.text("channel.links")) {
-            ForEach(session.flattenedChannels.filter { $0.id != channel.id }) { target in
-                let linked = channel.linkedChannelIDs.contains(target.id)
-                Button {
-                    session.setChannelLink(channel, target: target, linked: !linked)
-                } label: {
-                    if linked { Label(target.name, systemImage: "checkmark") }
-                    else { Text(target.name) }
+        if session.hasPermission(.linkChannel) {
+            Menu(L10n.text("channel.links")) {
+                ForEach(session.flattenedChannels.filter { $0.id != channel.id }) { target in
+                    let linked = channel.linkedChannelIDs.contains(target.id)
+                    Button {
+                        session.setChannelLink(channel, target: target, linked: !linked)
+                    } label: {
+                        if linked { Label(target.name, systemImage: "checkmark") }
+                        else { Text(target.name) }
+                    }
                 }
             }
         }
@@ -214,28 +224,33 @@ private struct ChannelNode: View {
         Button(L10n.text("channel.copyURL"), systemImage: "link") {
             session.copyURL(session.channelURL(channel))
         }
-        Button(L10n.text("acl.edit"), systemImage: "lock.shield") {
-            session.aclEditorChannel = channel
+        if session.hasPermission(.write) {
+            Button(L10n.text("acl.edit"), systemImage: "lock.shield") {
+                session.aclEditorChannel = channel
+            }
         }
-        Menu(L10n.text("voice.setChannelTarget")) {
-            Button(L10n.text("voice.channelOnly")) {
-                session.setWhisperTarget(channel: channel, links: false, children: false)
-            }
-            Button(L10n.text("voice.channelAndChildren")) {
-                session.setWhisperTarget(channel: channel, links: false, children: true)
-            }
-            Button(L10n.text("voice.channelLinksChildren")) {
-                session.setWhisperTarget(channel: channel, links: true, children: true)
+        if session.hasPermission(.whisper) {
+            Menu(L10n.text("voice.setChannelTarget")) {
+                Button(L10n.text("voice.channelOnly")) {
+                    session.setWhisperTarget(channel: channel, links: false, children: false)
+                }
+                Button(L10n.text("voice.channelAndChildren")) {
+                    session.setWhisperTarget(channel: channel, links: false, children: true)
+                }
+                Button(L10n.text("voice.channelLinksChildren")) {
+                    session.setWhisperTarget(channel: channel, links: true, children: true)
+                }
             }
         }
         ForEach(session.contextActions(for: 2)) { action in
             Button(action.title, systemImage: "command") { session.performContextAction(action, channel: channel) }
         }
-        Divider()
-        Button(L10n.text("common.delete"), systemImage: "trash", role: .destructive) {
-            session.pendingChannelDeletion = channel
+        if session.hasPermission(.write), channel.parentID != nil {
+            Divider()
+            Button(L10n.text("common.delete"), systemImage: "trash", role: .destructive) {
+                session.pendingChannelDeletion = channel
+            }
         }
-        .disabled(channel.parentID == nil)
     }
 
     private func percentLabel(_ volume: Float) -> String {
@@ -319,6 +334,14 @@ private struct UserRow: View {
 
             Text(session.displayName(for: user))
                 .lineLimit(1)
+
+            if user.isSuperUser {
+                Image(systemName: "crown.fill")
+                    .font(.caption)
+                    .foregroundStyle(.yellow)
+                    .help(L10n.text("owner.badge"))
+                    .accessibilityLabel(L10n.text("owner.badge"))
+            }
 
             Spacer()
 
@@ -416,53 +439,66 @@ private struct UserRow: View {
         }
         .disabled(user.certificateHash == nil)
 
-        Button {
-            session.setWhisperTarget(user: user)
-        } label: {
-            Label(L10n.text("voice.setUserTarget"), systemImage: "person.wave.2")
+        if session.hasPermission(.whisper) {
+            Button {
+                session.setWhisperTarget(user: user)
+            } label: {
+                Label(L10n.text("voice.setUserTarget"), systemImage: "person.wave.2")
+            }
         }
         ForEach(session.contextActions(for: 4)) { action in
             Button(action.title, systemImage: "command") { session.performContextAction(action, user: user) }
         }
 
-        Button {
-            session.setPrioritySpeaker(!user.isPrioritySpeaker, for: user)
-        } label: {
-            Label(
-                user.isPrioritySpeaker ? L10n.text("user.priority.disable") : L10n.text("user.priority.enable"),
-                systemImage: user.isPrioritySpeaker ? "star.slash" : "star"
-            )
+        if session.hasPermission(.write) {
+            Button {
+                session.setPrioritySpeaker(!user.isPrioritySpeaker, for: user)
+            } label: {
+                Label(
+                    user.isPrioritySpeaker ? L10n.text("user.priority.disable") : L10n.text("user.priority.enable"),
+                    systemImage: user.isPrioritySpeaker ? "star.slash" : "star"
+                )
+            }
         }
         if case .connected(let ownSession) = session.connectionState,
-           ownSession == user.id, user.registeredUserID == nil {
+           ownSession == user.id, user.registeredUserID == nil,
+           session.hasPermission(.selfRegister) {
             Button {
                 session.registerUser(user)
             } label: {
                 Label(L10n.text("user.register"), systemImage: "person.badge.key")
             }
         }
-        Divider()
-        Button {
-            session.setServerMuted(!user.isMutedByServer, for: user)
-        } label: {
-            Label(
-                user.isMutedByServer ? L10n.text("moderation.serverUnmute") : L10n.text("moderation.serverMute"),
-                systemImage: user.isMutedByServer ? "mic" : "mic.slash"
-            )
-        }
-        Button {
-            session.setServerDeafened(!user.isDeafenedByServer, for: user)
-        } label: {
-            Label(
-                user.isDeafenedByServer ? L10n.text("moderation.serverUndeafen") : L10n.text("moderation.serverDeafen"),
-                systemImage: user.isDeafenedByServer ? "speaker.wave.2" : "speaker.slash"
-            )
-        }
-        Button(L10n.text("moderation.kick.action"), systemImage: "person.crop.circle.badge.xmark") {
-            session.moderationRequest = UserModerationRequest(user: user, action: .kick)
-        }
-        Button(L10n.text("moderation.ban.action"), systemImage: "hand.raised.fill", role: .destructive) {
-            session.moderationRequest = UserModerationRequest(user: user, action: .ban)
+        if session.hasUserManagementPermission {
+            Divider()
+            if session.hasPermission(.muteDeafen) {
+                Button {
+                    session.setServerMuted(!user.isMutedByServer, for: user)
+                } label: {
+                    Label(
+                        user.isMutedByServer ? L10n.text("moderation.serverUnmute") : L10n.text("moderation.serverMute"),
+                        systemImage: user.isMutedByServer ? "mic" : "mic.slash"
+                    )
+                }
+                Button {
+                    session.setServerDeafened(!user.isDeafenedByServer, for: user)
+                } label: {
+                    Label(
+                        user.isDeafenedByServer ? L10n.text("moderation.serverUndeafen") : L10n.text("moderation.serverDeafen"),
+                        systemImage: user.isDeafenedByServer ? "speaker.wave.2" : "speaker.slash"
+                    )
+                }
+            }
+            if session.hasPermission(.kick) {
+                Button(L10n.text("moderation.kick.action"), systemImage: "person.crop.circle.badge.xmark") {
+                    session.moderationRequest = UserModerationRequest(user: user, action: .kick)
+                }
+            }
+            if session.hasPermission(.ban) {
+                Button(L10n.text("moderation.ban.action"), systemImage: "hand.raised.fill", role: .destructive) {
+                    session.moderationRequest = UserModerationRequest(user: user, action: .ban)
+                }
+            }
         }
 
         Button {
@@ -506,6 +542,12 @@ private struct UserInformationView: View {
                 Label(currentUser.name, systemImage: isTalking ? "waveform.circle.fill" : "person.crop.circle")
                     .font(.title2.weight(.semibold))
                     .foregroundStyle(isTalking ? Color.green : .primary)
+                if currentUser.isSuperUser {
+                    Image(systemName: "crown.fill")
+                        .foregroundStyle(.yellow)
+                        .help(L10n.text("owner.badge"))
+                        .accessibilityLabel(L10n.text("owner.badge"))
+                }
                 Spacer()
                 Button {
                     session.closeUserInformation()

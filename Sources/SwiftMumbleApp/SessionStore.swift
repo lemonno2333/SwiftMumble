@@ -61,6 +61,7 @@ final class SessionStore {
     var pendingServerDeletion: MumbleServer?
     var serverManagementError: String?
     var serverWelcomeText = ""
+    var currentPermissions: MumblePermission = []
     var pendingServerCertificate: PendingServerCertificate?
     var isUsingUDP = false
     var clientIdentityInfo: ClientIdentityInfo?

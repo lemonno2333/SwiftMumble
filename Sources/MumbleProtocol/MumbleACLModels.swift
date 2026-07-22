@@ -1,5 +1,31 @@
 import Foundation
 
+public struct MumblePermission: OptionSet, Equatable, Sendable {
+    public let rawValue: UInt32
+
+    public init(rawValue: UInt32) {
+        self.rawValue = rawValue
+    }
+
+    public static let write = Self(rawValue: 0x1)
+    public static let traverse = Self(rawValue: 0x2)
+    public static let enter = Self(rawValue: 0x4)
+    public static let speak = Self(rawValue: 0x8)
+    public static let muteDeafen = Self(rawValue: 0x10)
+    public static let move = Self(rawValue: 0x20)
+    public static let makeChannel = Self(rawValue: 0x40)
+    public static let linkChannel = Self(rawValue: 0x80)
+    public static let whisper = Self(rawValue: 0x100)
+    public static let textMessage = Self(rawValue: 0x200)
+    public static let makeTemporaryChannel = Self(rawValue: 0x400)
+    public static let listen = Self(rawValue: 0x800)
+    public static let kick = Self(rawValue: 0x10000)
+    public static let ban = Self(rawValue: 0x20000)
+    public static let register = Self(rawValue: 0x40000)
+    public static let selfRegister = Self(rawValue: 0x80000)
+    public static let resetUserContent = Self(rawValue: 0x100000)
+}
+
 public struct MumbleACLGroup: Identifiable, Equatable, Sendable {
     public var id: String { name }
     public var name: String

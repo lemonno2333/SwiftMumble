@@ -31,10 +31,11 @@ struct ServerSidebar: View {
                             Button(L10n.text("server.copyURL"), systemImage: "link") {
                                 session.copyURL(session.serverURL(for: server))
                             }
-                            Button(L10n.text("registeredUsers.title"), systemImage: "person.3") {
-                                session.isShowingRegisteredUsers = true
+                            if session.canUseServerSessionActions(for: server), session.hasPermission(.register) {
+                                Button(L10n.text("registeredUsers.title"), systemImage: "person.3") {
+                                    session.isShowingRegisteredUsers = true
+                                }
                             }
-                            .disabled(!session.canUseServerSessionActions(for: server))
                             Button(L10n.text("serverInfo.title"), systemImage: "info.circle") {
                                 session.isShowingServerInformation = true
                             }

@@ -70,6 +70,7 @@
 "channel.listeningVolume" = "Listening Volume";
 "channel.links" = "Linked Channels";
 "permission.denied" = "The server denied this operation.";
+"owner.badge" = "Server owner (SuperUser)";
 "chat.title" = "Conversation";
 "chat.placeholder" = "Message channel";
 "chat.send" = "Send Message";

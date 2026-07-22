@@ -53,6 +53,10 @@ public struct MumbleUser: Identifiable, Hashable, Sendable {
     public var hasCommentResource: Bool
     public var hasAvatarResource: Bool
 
+    public var isSuperUser: Bool {
+        name.caseInsensitiveCompare("SuperUser") == .orderedSame
+    }
+
     public init(
         id: UInt32,
         name: String,

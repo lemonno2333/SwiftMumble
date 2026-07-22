@@ -70,6 +70,7 @@
 "channel.listeningVolume" = "監聽音量";
 "channel.links" = "連結頻道";
 "permission.denied" = "伺服器拒絕了此操作。";
+"owner.badge" = "伺服器房主（SuperUser）";
 "chat.title" = "對話";
 "chat.placeholder" = "傳送訊息到頻道";
 "chat.send" = "傳送訊息";

@@ -26,6 +26,7 @@ extension SessionStore {
         serverProtocolVersion = MumbleProtocolVersion(major: 1, minor: 4, patch: 0)
         channels = []
         serverWelcomeText = ""
+        currentPermissions = []
         chat.beginConnection(isReconnect: isReconnect)
         serverRecognizedIdentityHash = nil
         connectionState = .connecting
@@ -496,12 +497,14 @@ extension SessionStore {
         selectedChannelID = nil
         expandedChannelIDs.removeAll()
         serverWelcomeText = ""
+        currentPermissions = []
         chat.clearSession()
         closeUserInformation()
         profileEditorTarget = nil
         moderationRequest = nil
         aclEditorChannel = nil
         aclConfiguration = nil
+        isShowingRegisteredUsers = false
         registeredUsers.removeAll()
         serverContextActions.removeAll()
         serverRecognizedIdentityHash = nil
